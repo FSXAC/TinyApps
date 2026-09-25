@@ -575,6 +575,15 @@ static void to_renderer(App *a, int wx, int wy, int *rx, int *ry) {
     *ry = (int)(wy * a->dpi);
 }
 
+/* Event coordinates are unreliable across SDL builds (sdl2-compat reports them
+   in pixels, classic SDL2 in points), so always query the mouse state, which
+   is in window points on both. */
+static void mouse_pos(App *a, int *rx, int *ry) {
+    int mx, my;
+    SDL_GetMouseState(&mx, &my);
+    to_renderer(a, mx, my, rx, ry);
+}
+
 static int floor_div(int n, int d) { return n >= 0 ? n / d : -1 - (-n - 1) / d; }
 
 /* Converts renderer coordinates to canvas cell coordinates. Returns whether
@@ -642,9 +651,8 @@ static void render(App *a) {
     SDL_SetRenderDrawColor(r, 40, 40, 44, 255);
     SDL_RenderClear(r);
 
-    int mx, my, rx, ry;
-    SDL_GetMouseState(&mx, &my);
-    to_renderer(a, mx, my, &rx, &ry);
+    int rx, ry;
+    mouse_pos(a, &rx, &ry);
 
     for (int i = 0; i < TOOL_COUNT; i++)
         draw_button(a, a->tool_rects[i], &TOOL_BUTTONS[i], a->tool == (Tool)i,
@@ -792,7 +800,7 @@ static void run_action(App *a, Action act) {
 static void handle_mouse_down(App *a, const SDL_MouseButtonEvent *e) {
     int rx, ry, cx, cy;
     layout(a);
-    to_renderer(a, e->x, e->y, &rx, &ry);
+    mouse_pos(a, &rx, &ry);
     if (a->dragging) return;
     if (e->button == SDL_BUTTON_LEFT) {
         for (int i = 0; i < TOOL_COUNT; i++)
@@ -808,10 +816,10 @@ static void handle_mouse_down(App *a, const SDL_MouseButtonEvent *e) {
     begin_drag(a, e->button, cx, cy, primary ? BLACK : WHITE);
 }
 
-static void handle_motion(App *a, int wx, int wy) {
+static void handle_motion(App *a) {
     int rx, ry, cx, cy;
     layout(a);
-    to_renderer(a, wx, wy, &rx, &ry);
+    mouse_pos(a, &rx, &ry);
     bool inview = to_cell(a, rx, ry, &cx, &cy);
     a->hover = inview && cx >= 0 && cy >= 0 && cx < CANVAS && cy < CANVAS;
     a->hx = cx;
@@ -893,7 +901,7 @@ int main(int argc, char **argv) {
                 break;
             case SDL_MOUSEMOTION:
                 a->shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
-                handle_motion(a, e.motion.x, e.motion.y);
+                handle_motion(a);
                 break;
             case SDL_WINDOWEVENT:
                 if (e.window.event == SDL_WINDOWEVENT_LEAVE) a->hover = false;
