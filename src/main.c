@@ -16,7 +16,7 @@
 
 enum { WHITE = 0, BLACK = 1 };
 
-typedef enum { T_PENCIL, T_LINE, T_ELLIPSE, T_FILL, T_ERASER, TOOL_COUNT } Tool;
+typedef enum { T_PENCIL, T_LINE, T_ELLIPSE, T_FILL, T_ERASER, T_SELECT, TOOL_COUNT } Tool;
 typedef enum { A_UNDO, A_CLEAR, A_SAVE, ACTION_COUNT } Action;
 
 typedef struct { uint8_t px[CANVAS][CANVAS]; } Image;
@@ -40,6 +40,7 @@ static const Glyph FONT[] = {
     {'P', {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}},
     {'R', {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}},
     {'S', {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}},
+    {'T', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
     {'U', {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
     {'V', {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}},
 };
@@ -143,6 +144,24 @@ static const char *ICON_ERASER[16] = {
     "................",
     "................",
 };
+static const char *ICON_SELECT[16] = {
+    "................",
+    "................",
+    "..##.##.##.##...",
+    "..#..........#..",
+    "................",
+    "..#..........#..",
+    "..#..........#..",
+    "................",
+    "..#..........#..",
+    "..#..........#..",
+    "................",
+    "..#..........#..",
+    "...##.##.##.##..",
+    "................",
+    "................",
+    "................",
+};
 static const char *ICON_UNDO[16] = {
     "................",
     "................",
@@ -205,12 +224,12 @@ typedef struct {
 
 static const ButtonDef TOOL_BUTTONS[TOOL_COUNT] = {
     {"PENCIL", ICON_PENCIL}, {"LINE", ICON_LINE},     {"ELLIPSE", ICON_ELLIPSE},
-    {"FILL", ICON_FILL},     {"ERASER", ICON_ERASER},
+    {"FILL", ICON_FILL},     {"ERASER", ICON_ERASER}, {"SELECT", ICON_SELECT},
 };
 static const ButtonDef ACTION_BUTTONS[ACTION_COUNT] = {
     {"UNDO", ICON_UNDO}, {"CLEAR", ICON_CLEAR}, {"SAVE", ICON_SAVE},
 };
-static const char *TOOL_NAMES[TOOL_COUNT] = {"Pencil", "Line", "Ellipse", "Fill", "Eraser"};
+static const char *TOOL_NAMES[TOOL_COUNT] = {"Pencil", "Line", "Ellipse", "Fill", "Eraser", "Select"};
 
 /* ------------------------------------------------------------------ */
 /* Application state.                                                   */
@@ -236,6 +255,14 @@ typedef struct {
 
     /* Shape preview overlay covering the whole view (canvas + margin). */
     uint8_t overlay[VIEW][VIEW];
+
+    /* Rectangular selection. While floating, the selected pixels live in
+       `flt` (lifted off `img`) and are pasted back when deselected. */
+    bool sel_on, floating;
+    int sel_x, sel_y, sel_w, sel_h;
+    uint8_t flt[CANVAS][CANVAS];
+    enum { DRAG_PAINT, DRAG_SEL_RECT, DRAG_SEL_MOVE } drag_mode;
+    int move_ox, move_oy;
     int overlay_color;
 
     /* Hover. */
@@ -261,12 +288,25 @@ static void autosave_path(char *out, size_t n) {
     SDL_free(base);
 }
 
+/* The image as the user sees it, including any floating selection. */
+static void composite(const App *a, Image *out) {
+    *out = a->img;
+    if (!a->floating) return;
+    for (int j = 0; j < a->sel_h; j++)
+        for (int i = 0; i < a->sel_w; i++) {
+            int x = a->sel_x + i, y = a->sel_y + j;
+            if (x >= 0 && y >= 0 && x < CANVAS && y < CANVAS) out->px[y][x] = a->flt[j][i];
+        }
+}
+
 static void autosave(App *a) {
+    Image out;
+    composite(a, &out);
     char tmp[1100];
     snprintf(tmp, sizeof tmp, "%s.tmp", a->save_path);
     FILE *f = fopen(tmp, "wb");
     if (!f) return;
-    bool ok = fwrite(&a->img, sizeof a->img, 1, f) == 1;
+    bool ok = fwrite(&out, sizeof out, 1, f) == 1;
     ok = (fclose(f) == 0) && ok;
     if (ok) rename(tmp, a->save_path);
     else remove(tmp);
@@ -353,7 +393,9 @@ static void save_bitmap(App *a) {
     }
 
     char msg[1400];
-    if (write_bmp(&a->img, path)) {
+    Image out;
+    composite(a, &out);
+    if (write_bmp(&out, path)) {
         snprintf(msg, sizeof msg, "Saved 32x32 bitmap to:\n%s", path);
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "TinyPainter", msg, a->win);
     } else {
@@ -385,17 +427,71 @@ static void do_undo(App *a) {
     autosave(a);
 }
 
+/* ------------------------------------------------------------------ */
+/* Selection.                                                           */
+
+/* Moves the selected pixels into the floating buffer, leaving white. */
+static void lift_selection(App *a) {
+    if (!a->sel_on || a->floating) return;
+    push_undo(a);
+    for (int j = 0; j < a->sel_h; j++)
+        for (int i = 0; i < a->sel_w; i++) {
+            a->flt[j][i] = a->img.px[a->sel_y + j][a->sel_x + i];
+            a->img.px[a->sel_y + j][a->sel_x + i] = WHITE;
+        }
+    a->floating = true;
+}
+
+/* Pastes any floating pixels back and removes the selection. */
+static void deselect(App *a) {
+    if (a->floating) {
+        composite(a, &a->img);
+        a->floating = false;
+        autosave(a);
+    }
+    a->sel_on = false;
+}
+
+/* Keeps at least one pixel of the selection on the canvas. */
+static void clamp_selection(App *a) {
+    if (a->sel_x < 1 - a->sel_w) a->sel_x = 1 - a->sel_w;
+    if (a->sel_y < 1 - a->sel_h) a->sel_y = 1 - a->sel_h;
+    if (a->sel_x > CANVAS - 1) a->sel_x = CANVAS - 1;
+    if (a->sel_y > CANVAS - 1) a->sel_y = CANVAS - 1;
+}
+
+static void move_selection(App *a, int dx, int dy) {
+    if (!a->sel_on) return;
+    lift_selection(a);
+    a->sel_x += dx;
+    a->sel_y += dy;
+    clamp_selection(a);
+    autosave(a);
+}
+
+static void delete_selection(App *a) {
+    if (!a->sel_on) return;
+    if (a->floating) {
+        a->floating = false; /* the lift already recorded an undo step */
+    } else {
+        push_undo(a);
+        for (int j = 0; j < a->sel_h; j++)
+            memset(&a->img.px[a->sel_y + j][a->sel_x], WHITE, (size_t)a->sel_w);
+        settle_undo(a);
+    }
+    a->sel_on = false;
+    autosave(a);
+}
+
+static void select_all(App *a) {
+    deselect(a);
+    a->sel_on = true;
+    a->sel_x = a->sel_y = 0;
+    a->sel_w = a->sel_h = CANVAS;
+}
+
 static void do_clear(App *a) {
-    const SDL_MessageBoxButtonData buttons[] = {
-        {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
-        {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Clear"},
-    };
-    const SDL_MessageBoxData box = {
-        SDL_MESSAGEBOX_WARNING, a->win, "TinyPainter",
-        "Clear the canvas? (You can still undo.)", 2, buttons, NULL,
-    };
-    int choice = 0;
-    if (SDL_ShowMessageBox(&box, &choice) != 0 || choice != 1) return;
+    a->sel_on = a->floating = false;
     push_undo(a);
     memset(&a->img, WHITE, sizeof a->img);
     settle_undo(a);
@@ -674,6 +770,21 @@ static void render(App *a) {
             int x = vx - MARGIN, y = vy - MARGIN;
             bool inside = x >= 0 && y >= 0 && x < CANVAS && y < CANVAS;
             bool ov = a->overlay[vy][vx];
+            int fi = x - a->sel_x, fj = y - a->sel_y;
+            bool fl = a->floating && fi >= 0 && fj >= 0 && fi < a->sel_w && fj < a->sel_h;
+            if (fl && !ov) {
+                int color = a->flt[fj][fi];
+                if (inside) {
+                    if (color == BLACK) SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+                    else SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+                } else if (color == BLACK) {
+                    SDL_SetRenderDrawColor(r, 70, 70, 76, 255);
+                } else {
+                    continue;
+                }
+                fill_rect(r, ox + vx * c, oy + vy * c, c, c);
+                continue;
+            }
             if (!inside && !ov) continue;
             if (ov && !inside) {
                 /* Parts of a shape falling off the canvas: tinted hint only. */
@@ -710,6 +821,34 @@ static void render(App *a) {
     fill_rect(r, cx0 - bw, cy0 + csz, csz + 2 * bw, bw);
     fill_rect(r, cx0 - bw, cy0, bw, csz);
     fill_rect(r, cx0 + csz, cy0, bw, csz);
+
+    /* Selection outline (dashed), clipped to the view. */
+    if (a->sel_on) {
+        SDL_Rect clip = {a->view.x, a->view.y, a->view.w, a->view.h};
+        SDL_RenderSetClipRect(r, &clip);
+        int sx0 = cx0 + a->sel_x * c, sy0 = cy0 + a->sel_y * c;
+        int sw = a->sel_w * c, sh = a->sel_h * c;
+        int t = c >= 24 ? 3 : c >= 10 ? 2 : 1;
+        int dash = c / 2 > 3 ? c / 2 : 3;
+        for (int pass = 0; pass < 2; pass++) {
+            for (int d = 0; d < sw + sh; d += dash) {
+                bool on = (d / dash) % 2 == pass;
+                if (pass == 0) SDL_SetRenderDrawColor(r, 0, 110, 255, 255);
+                else SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+                if (!on) continue;
+                if (d < sw) {
+                    int len = d + dash > sw ? sw - d : dash;
+                    fill_rect(r, sx0 + d, sy0, len, t);
+                    fill_rect(r, sx0 + d, sy0 + sh - t, len, t);
+                } else {
+                    int e = d - sw, len = e + dash > sh ? sh - e : dash;
+                    fill_rect(r, sx0, sy0 + e, t, len);
+                    fill_rect(r, sx0 + sw - t, sy0 + e, t, len);
+                }
+            }
+        }
+        SDL_RenderSetClipRect(r, NULL);
+    }
 
     /* Hovered-pixel outline. */
     if (a->hover && !(a->dragging && is_shape_tool(a->tool))) {
@@ -754,8 +893,52 @@ static void begin_drag(App *a, int button, int cx, int cy, int color) {
     if (a->dragging) SDL_CaptureMouse(SDL_TRUE);
 }
 
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+static void begin_select_drag(App *a, int button, int cx, int cy) {
+    bool inside = a->sel_on && cx >= a->sel_x && cy >= a->sel_y &&
+                  cx < a->sel_x + a->sel_w && cy < a->sel_y + a->sel_h;
+    if (inside) {
+        lift_selection(a);
+        a->drag_mode = DRAG_SEL_MOVE;
+        a->move_ox = a->sel_x;
+        a->move_oy = a->sel_y;
+    } else {
+        deselect(a);
+        a->drag_mode = DRAG_SEL_RECT;
+    }
+    a->dragging = true;
+    a->drag_button = button;
+    a->sx = a->lx = cx;
+    a->sy = a->ly = cy;
+    SDL_CaptureMouse(SDL_TRUE);
+}
+
+static void update_select_drag(App *a) {
+    if (a->drag_mode == DRAG_SEL_MOVE) {
+        a->sel_x = a->move_ox + a->lx - a->sx;
+        a->sel_y = a->move_oy + a->ly - a->sy;
+        clamp_selection(a);
+        return;
+    }
+    int x0 = clampi(a->sx, 0, CANVAS - 1), y0 = clampi(a->sy, 0, CANVAS - 1);
+    int x1 = clampi(a->lx, 0, CANVAS - 1), y1 = clampi(a->ly, 0, CANVAS - 1);
+    a->sel_x = x0 < x1 ? x0 : x1;
+    a->sel_y = y0 < y1 ? y0 : y1;
+    a->sel_w = abs(x1 - x0) + 1;
+    a->sel_h = abs(y1 - y0) + 1;
+    /* A plain click (no drag) just deselects. */
+    a->sel_on = a->lx != a->sx || a->ly != a->sy;
+}
+
 static void drag_to(App *a, int cx, int cy) {
     if (!a->dragging) return;
+    if (a->drag_mode != DRAG_PAINT) {
+        a->lx = cx;
+        a->ly = cy;
+        update_select_drag(a);
+        return;
+    }
     if (a->tool == T_PENCIL || a->tool == T_ERASER)
         raster_line(a, a->lx, a->ly, cx, cy, a->drag_color, plot_canvas);
     a->lx = cx;
@@ -766,6 +949,12 @@ static void drag_to(App *a, int cx, int cy) {
 static void end_drag(App *a) {
     if (!a->dragging) return;
     SDL_CaptureMouse(SDL_FALSE);
+    if (a->drag_mode != DRAG_PAINT) {
+        if (a->drag_mode == DRAG_SEL_MOVE) autosave(a);
+        a->dragging = false;
+        a->drag_mode = DRAG_PAINT;
+        return;
+    }
     if (is_shape_tool(a->tool)) build_shape(a, plot_canvas);
     a->dragging = false;
     memset(a->overlay, 0, sizeof a->overlay);
@@ -776,6 +965,17 @@ static void end_drag(App *a) {
 static void cancel_drag(App *a) {
     if (!a->dragging) return;
     SDL_CaptureMouse(SDL_FALSE);
+    if (a->drag_mode != DRAG_PAINT) {
+        if (a->drag_mode == DRAG_SEL_MOVE) {
+            a->sel_x = a->move_ox;
+            a->sel_y = a->move_oy;
+        } else {
+            a->sel_on = false;
+        }
+        a->dragging = false;
+        a->drag_mode = DRAG_PAINT;
+        return;
+    }
     a->dragging = false;
     memset(a->overlay, 0, sizeof a->overlay);
     do_undo(a);
@@ -783,6 +983,7 @@ static void cancel_drag(App *a) {
 
 static void set_tool(App *a, Tool t) {
     end_drag(a);
+    if (t != T_SELECT) deselect(a);
     a->tool = t;
     update_title(a);
 }
@@ -790,7 +991,11 @@ static void set_tool(App *a, Tool t) {
 static void run_action(App *a, Action act) {
     end_drag(a);
     switch (act) {
-    case A_UNDO: do_undo(a); break;
+    case A_UNDO:
+        /* Undoing a floating selection restores the pre-lift image. */
+        a->sel_on = a->floating = false;
+        do_undo(a);
+        break;
     case A_CLEAR: do_clear(a); break;
     case A_SAVE: save_bitmap(a); break;
     default: break;
@@ -810,6 +1015,10 @@ static void handle_mouse_down(App *a, const SDL_MouseButtonEvent *e) {
     }
     if (e->button != SDL_BUTTON_LEFT && e->button != SDL_BUTTON_RIGHT) return;
     if (!to_cell(a, rx, ry, &cx, &cy)) return;
+    if (a->tool == T_SELECT) {
+        if (e->button == SDL_BUTTON_LEFT) begin_select_drag(a, e->button, cx, cy);
+        return;
+    }
     /* Left paints black, right paints white; the eraser swaps them. */
     bool primary = e->button == SDL_BUTTON_LEFT;
     if (a->tool == T_ERASER) primary = !primary;
@@ -842,12 +1051,36 @@ static void handle_key(App *a, const SDL_KeyboardEvent *e) {
     case SDLK_o: if (!cmd) set_tool(a, T_ELLIPSE); break;
     case SDLK_f: if (!cmd) set_tool(a, T_FILL); break;
     case SDLK_e: case SDLK_x: if (!cmd) set_tool(a, T_ERASER); break;
+    case SDLK_m: case SDLK_r: if (!cmd) set_tool(a, T_SELECT); break;
+    case SDLK_a:
+        if (cmd) {
+            end_drag(a);
+            set_tool(a, T_SELECT);
+            select_all(a);
+        }
+        break;
+    case SDLK_LEFT: case SDLK_RIGHT: case SDLK_UP: case SDLK_DOWN: {
+        if (a->dragging) break;
+        int step = (mod & KMOD_SHIFT) ? 4 : 1;
+        SDL_Keycode k = e->keysym.sym;
+        move_selection(a, k == SDLK_LEFT ? -step : k == SDLK_RIGHT ? step : 0,
+                       k == SDLK_UP ? -step : k == SDLK_DOWN ? step : 0);
+        break;
+    }
+    case SDLK_RETURN: case SDLK_KP_ENTER: if (!a->dragging) deselect(a); break;
     case SDLK_g: if (!cmd) a->show_grid = !a->show_grid; break;
     case SDLK_z: if (cmd) run_action(a, A_UNDO); break;
     case SDLK_s: if (cmd) run_action(a, A_SAVE); break;
     case SDLK_n: if (cmd) run_action(a, A_CLEAR); break;
-    case SDLK_DELETE: case SDLK_BACKSPACE: run_action(a, A_CLEAR); break;
-    case SDLK_ESCAPE: cancel_drag(a); break;
+    case SDLK_DELETE: case SDLK_BACKSPACE:
+        if (a->dragging) break;
+        if (a->sel_on) delete_selection(a);
+        else run_action(a, A_CLEAR);
+        break;
+    case SDLK_ESCAPE:
+        if (a->dragging) cancel_drag(a);
+        else deselect(a);
+        break;
     default: break;
     }
 }
@@ -925,6 +1158,7 @@ int main(int argc, char **argv) {
     }
 
     end_drag(a);
+    deselect(a);
     autosave(a);
     SDL_DestroyRenderer(a->ren);
     SDL_DestroyWindow(a->win);
