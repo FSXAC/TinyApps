@@ -1,13 +1,16 @@
 /*
- * TinyPainter - a 32x32 black & white pixel painter built on SDL2.
+ * TinyPainter - a 32x32 black & white pixel painter built on SDL3.
  */
-#include <SDL.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "tiny.h"
 
 #define CANVAS 32
 #define MARGIN 4                       /* context cells shown around the canvas */
@@ -22,34 +25,6 @@ typedef enum { A_UNDO, A_CLEAR, A_SAVE, ACTION_COUNT } Action;
 typedef struct { uint8_t px[CANVAS][CANVAS]; } Image;
 
 typedef struct { int x, y, w, h; } Rect;
-
-/* ------------------------------------------------------------------ */
-/* Tiny 5x7 bitmap font (only the glyphs used by the UI labels).        */
-
-typedef struct { char c; uint8_t rows[7]; } Glyph;
-static const Glyph FONT[] = {
-    {'A', {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
-    {'C', {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}},
-    {'D', {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E}},
-    {'E', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}},
-    {'F', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}},
-    {'I', {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}},
-    {'L', {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}},
-    {'N', {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}},
-    {'O', {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
-    {'P', {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}},
-    {'R', {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}},
-    {'S', {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}},
-    {'T', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
-    {'U', {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
-    {'V', {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}},
-};
-
-static const Glyph *find_glyph(char c) {
-    for (size_t i = 0; i < sizeof FONT / sizeof FONT[0]; i++)
-        if (FONT[i].c == c) return &FONT[i];
-    return NULL;
-}
 
 /* ------------------------------------------------------------------ */
 /* 16x16 toolbar icons.                                                 */
@@ -266,6 +241,7 @@ static int pattern_at(int pat, int x, int y) {
 typedef struct {
     SDL_Window *win;
     SDL_Renderer *ren;
+    TinyFont font;
 
     Image img;
     Image undo[UNDO_MAX];
@@ -664,7 +640,7 @@ static bool in_rect(Rect r, int x, int y) {
 static void layout(App *a) {
     int ww, wh, rw, rh;
     SDL_GetWindowSize(a->win, &ww, &wh);
-    SDL_GetRendererOutputSize(a->ren, &rw, &rh);
+    SDL_GetRenderOutputSize(a->ren, &rw, &rh);
     a->dpi = ww > 0 ? (float)rw / (float)ww : 1.0f;
 
     const int nbtn = TOOL_COUNT + ACTION_COUNT;
@@ -772,13 +748,11 @@ static void to_renderer(App *a, int wx, int wy, int *rx, int *ry) {
     *ry = (int)(wy * a->dpi);
 }
 
-/* Event coordinates are unreliable across SDL builds (sdl2-compat reports them
-   in pixels, classic SDL2 in points), so always query the mouse state, which
-   is in window points on both. */
+/* The mouse state is in window points; layout works in renderer pixels. */
 static void mouse_pos(App *a, int *rx, int *ry) {
-    int mx, my;
+    float mx, my;
     SDL_GetMouseState(&mx, &my);
-    to_renderer(a, mx, my, rx, ry);
+    to_renderer(a, (int)mx, (int)my, rx, ry);
 }
 
 static int floor_div(int n, int d) { return n >= 0 ? n / d : -1 - (-n - 1) / d; }
@@ -794,26 +768,10 @@ static bool to_cell(App *a, int rx, int ry, int *cx, int *cy) {
 /* ------------------------------------------------------------------ */
 /* Drawing.                                                             */
 
-static void fill_rect(SDL_Renderer *r, int x, int y, int w, int h) {
-    SDL_Rect rc = {x, y, w, h};
-    SDL_RenderFillRect(r, &rc);
-}
-
 static void draw_icon(SDL_Renderer *r, const char **icon, int x, int y, int scale) {
     for (int iy = 0; iy < 16; iy++)
         for (int ix = 0; ix < 16; ix++)
-            if (icon[iy][ix] == '#') fill_rect(r, x + ix * scale, y + iy * scale, scale, scale);
-}
-
-static void draw_text(SDL_Renderer *r, const char *s, int x, int y, int scale) {
-    for (; *s; s++, x += 6 * scale) {
-        const Glyph *g = find_glyph(*s);
-        if (!g) continue;
-        for (int row = 0; row < 7; row++)
-            for (int col = 0; col < 5; col++)
-                if (g->rows[row] & (0x10 >> col))
-                    fill_rect(r, x + col * scale, y + row * scale, scale, scale);
-    }
+            if (icon[iy][ix] == '#') tiny_fill_rect(r, x + ix * scale, y + iy * scale, scale, scale);
 }
 
 static void draw_button(App *a, Rect rc, const ButtonDef *def, bool active, bool hot) {
@@ -821,12 +779,12 @@ static void draw_button(App *a, Rect rc, const ButtonDef *def, bool active, bool
     if (active) SDL_SetRenderDrawColor(r, 235, 235, 235, 255);
     else if (hot) SDL_SetRenderDrawColor(r, 88, 88, 96, 255);
     else SDL_SetRenderDrawColor(r, 62, 62, 68, 255);
-    fill_rect(r, rc.x, rc.y, rc.w, rc.h);
+    tiny_fill_rect(r, rc.x, rc.y, rc.w, rc.h);
 
     int ls = (int)(a->dpi + 0.5f);
     if (ls < 1) ls = 1;
     int label_h = 7 * ls;
-    int label_w = (int)strlen(def->label) * 6 * ls - ls;
+    int label_w = tiny_text_width(def->label, ls);
     bool show_label = rc.h >= (int)(52 * a->dpi) && label_w <= rc.w - 2 * ls;
 
     int icon_space = rc.h - (show_label ? label_h + 6 * ls : 0);
@@ -839,7 +797,7 @@ static void draw_button(App *a, Rect rc, const ButtonDef *def, bool active, bool
     int top = rc.y + (icon_space - isz) / 2 + (show_label ? 2 * ls : 0);
     draw_icon(r, def->icon, rc.x + (rc.w - isz) / 2, top, scale);
     if (show_label)
-        draw_text(r, def->label, rc.x + (rc.w - label_w) / 2, rc.y + rc.h - label_h - 4 * ls, ls);
+        tiny_text(&a->font, def->label, rc.x + (rc.w - label_w) / 2, rc.y + rc.h - label_h - 4 * ls, ls);
 }
 
 static void draw_swatch(App *a, Rect rc, int pat, bool active, bool hot) {
@@ -848,23 +806,23 @@ static void draw_swatch(App *a, Rect rc, int pat, bool active, bool hot) {
     if (active) SDL_SetRenderDrawColor(r, 0, 110, 255, 255);
     else if (hot) SDL_SetRenderDrawColor(r, 150, 150, 158, 255);
     else SDL_SetRenderDrawColor(r, 20, 20, 22, 255);
-    fill_rect(r, rc.x - t, rc.y - t, rc.w + 2 * t, rc.h + 2 * t);
+    tiny_fill_rect(r, rc.x - t, rc.y - t, rc.w + 2 * t, rc.h + 2 * t);
     if (active) {
         SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
-        fill_rect(r, rc.x - t / 2, rc.y - t / 2, rc.w + t / 2 * 2, rc.h + t / 2 * 2);
+        tiny_fill_rect(r, rc.x - t / 2, rc.y - t / 2, rc.w + t / 2 * 2, rc.h + t / 2 * 2);
     }
     SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
-    fill_rect(r, rc.x, rc.y, rc.w, rc.h);
+    tiny_fill_rect(r, rc.x, rc.y, rc.w, rc.h);
     /* Pattern pixels drawn large enough to read, tiled from the top-left. */
     int ps = rc.w / 12;
     if (ps < 1) ps = 1;
     SDL_Rect clip = {rc.x, rc.y, rc.w, rc.h};
-    SDL_RenderSetClipRect(r, &clip);
+    SDL_SetRenderClipRect(r, &clip);
     SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
     for (int y = 0; y * ps < rc.h; y++)
         for (int x = 0; x * ps < rc.w; x++)
-            if (pattern_at(pat, x, y) == BLACK) fill_rect(r, rc.x + x * ps, rc.y + y * ps, ps, ps);
-    SDL_RenderSetClipRect(r, NULL);
+            if (pattern_at(pat, x, y) == BLACK) tiny_fill_rect(r, rc.x + x * ps, rc.y + y * ps, ps, ps);
+    SDL_SetRenderClipRect(r, NULL);
 }
 
 static void render(App *a) {
@@ -892,13 +850,13 @@ static void render(App *a) {
         Image out;
         composite(a, &out);
         SDL_SetRenderDrawColor(r, 20, 20, 22, 255);
-        fill_rect(r, m.x, m.y, m.w, m.h);
+        tiny_fill_rect(r, m.x, m.y, m.w, m.h);
         SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
-        fill_rect(r, m.x + 1, m.y + 1, m.w - 2, m.h - 2);
+        tiny_fill_rect(r, m.x + 1, m.y + 1, m.w - 2, m.h - 2);
         SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
         for (int y = 0; y < CANVAS; y++)
             for (int x = 0; x < CANVAS; x++)
-                if (out.px[y][x] == BLACK) fill_rect(r, m.x + 1 + x * ms, m.y + 1 + y * ms, ms, ms);
+                if (out.px[y][x] == BLACK) tiny_fill_rect(r, m.x + 1 + x * ms, m.y + 1 + y * ms, ms, ms);
     }
 
     int c = a->cell;
@@ -906,7 +864,7 @@ static void render(App *a) {
 
     /* Margin (context area around the paintable canvas). */
     SDL_SetRenderDrawColor(r, 120, 120, 126, 255);
-    fill_rect(r, ox, oy, a->view.w, a->view.h);
+    tiny_fill_rect(r, ox, oy, a->view.w, a->view.h);
 
     /* Canvas pixels + shape preview overlay. */
     for (int vy = 0; vy < VIEW; vy++) {
@@ -926,7 +884,7 @@ static void render(App *a) {
                 } else {
                     continue;
                 }
-                fill_rect(r, ox + vx * c, oy + vy * c, c, c);
+                tiny_fill_rect(r, ox + vx * c, oy + vy * c, c, c);
                 continue;
             }
             if (!inside && !ov) continue;
@@ -939,7 +897,7 @@ static void render(App *a) {
                 if (color == BLACK) SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
                 else SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
             }
-            fill_rect(r, ox + vx * c, oy + vy * c, c, c);
+            tiny_fill_rect(r, ox + vx * c, oy + vy * c, c, c);
         }
     }
 
@@ -952,8 +910,8 @@ static void render(App *a) {
             bool major = i % 8 == 0;
             int lw = major && c >= 12 ? 2 : 1;
             SDL_SetRenderDrawColor(r, 128, 128, 128, major ? 140 : 70);
-            fill_rect(r, cx0 + i * c - lw / 2, cy0, lw, csz);
-            fill_rect(r, cx0, cy0 + i * c - lw / 2, csz, lw);
+            tiny_fill_rect(r, cx0 + i * c - lw / 2, cy0, lw, csz);
+            tiny_fill_rect(r, cx0, cy0 + i * c - lw / 2, csz, lw);
         }
         SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
     }
@@ -961,15 +919,15 @@ static void render(App *a) {
     /* Canvas border. */
     int bw = c >= 8 ? 2 : 1;
     SDL_SetRenderDrawColor(r, 30, 30, 34, 255);
-    fill_rect(r, cx0 - bw, cy0 - bw, csz + 2 * bw, bw);
-    fill_rect(r, cx0 - bw, cy0 + csz, csz + 2 * bw, bw);
-    fill_rect(r, cx0 - bw, cy0, bw, csz);
-    fill_rect(r, cx0 + csz, cy0, bw, csz);
+    tiny_fill_rect(r, cx0 - bw, cy0 - bw, csz + 2 * bw, bw);
+    tiny_fill_rect(r, cx0 - bw, cy0 + csz, csz + 2 * bw, bw);
+    tiny_fill_rect(r, cx0 - bw, cy0, bw, csz);
+    tiny_fill_rect(r, cx0 + csz, cy0, bw, csz);
 
     /* Selection outline (dashed), clipped to the view. */
     if (a->sel_on) {
         SDL_Rect clip = {a->view.x, a->view.y, a->view.w, a->view.h};
-        SDL_RenderSetClipRect(r, &clip);
+        SDL_SetRenderClipRect(r, &clip);
         int sx0 = cx0 + a->sel_x * c, sy0 = cy0 + a->sel_y * c;
         int sw = a->sel_w * c, sh = a->sel_h * c;
         int t = c >= 24 ? 3 : c >= 10 ? 2 : 1;
@@ -982,16 +940,16 @@ static void render(App *a) {
                 if (!on) continue;
                 if (d < sw) {
                     int len = d + dash > sw ? sw - d : dash;
-                    fill_rect(r, sx0 + d, sy0, len, t);
-                    fill_rect(r, sx0 + d, sy0 + sh - t, len, t);
+                    tiny_fill_rect(r, sx0 + d, sy0, len, t);
+                    tiny_fill_rect(r, sx0 + d, sy0 + sh - t, len, t);
                 } else {
                     int e = d - sw, len = e + dash > sh ? sh - e : dash;
-                    fill_rect(r, sx0, sy0 + e, t, len);
-                    fill_rect(r, sx0 + sw - t, sy0 + e, t, len);
+                    tiny_fill_rect(r, sx0, sy0 + e, t, len);
+                    tiny_fill_rect(r, sx0 + sw - t, sy0 + e, t, len);
                 }
             }
         }
-        SDL_RenderSetClipRect(r, NULL);
+        SDL_SetRenderClipRect(r, NULL);
     }
 
     /* Hovered-pixel outline. */
@@ -999,10 +957,10 @@ static void render(App *a) {
         int hx = cx0 + a->hx * c, hy = cy0 + a->hy * c;
         int t = c >= 10 ? 2 : 1;
         SDL_SetRenderDrawColor(r, 255, 80, 60, 255);
-        fill_rect(r, hx, hy, c, t);
-        fill_rect(r, hx, hy + c - t, c, t);
-        fill_rect(r, hx, hy, t, c);
-        fill_rect(r, hx + c - t, hy, t, c);
+        tiny_fill_rect(r, hx, hy, c, t);
+        tiny_fill_rect(r, hx, hy + c - t, c, t);
+        tiny_fill_rect(r, hx, hy, t, c);
+        tiny_fill_rect(r, hx + c - t, hy, t, c);
     }
 
     SDL_RenderPresent(r);
@@ -1037,7 +995,7 @@ static void begin_drag(App *a, int button, int cx, int cy, int color) {
     } else {
         update_overlay(a);
     }
-    if (a->dragging) SDL_CaptureMouse(SDL_TRUE);
+    if (a->dragging) SDL_CaptureMouse(true);
 }
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -1058,7 +1016,7 @@ static void begin_select_drag(App *a, int button, int cx, int cy) {
     a->drag_button = button;
     a->sx = a->lx = cx;
     a->sy = a->ly = cy;
-    SDL_CaptureMouse(SDL_TRUE);
+    SDL_CaptureMouse(true);
 }
 
 static void update_select_drag(App *a) {
@@ -1095,7 +1053,7 @@ static void drag_to(App *a, int cx, int cy) {
 
 static void end_drag(App *a) {
     if (!a->dragging) return;
-    SDL_CaptureMouse(SDL_FALSE);
+    SDL_CaptureMouse(false);
     if (a->drag_mode != DRAG_PAINT) {
         if (a->drag_mode == DRAG_SEL_MOVE) autosave(a);
         a->dragging = false;
@@ -1111,7 +1069,7 @@ static void end_drag(App *a) {
 
 static void cancel_drag(App *a) {
     if (!a->dragging) return;
-    SDL_CaptureMouse(SDL_FALSE);
+    SDL_CaptureMouse(false);
     if (a->drag_mode != DRAG_PAINT) {
         if (a->drag_mode == DRAG_SEL_MOVE) {
             a->sel_x = a->move_ox;
@@ -1201,15 +1159,15 @@ static void handle_motion(App *a) {
 
 static void handle_key(App *a, const SDL_KeyboardEvent *e) {
     SDL_Keymod mod = SDL_GetModState();
-    bool cmd = (mod & (KMOD_CTRL | KMOD_GUI)) != 0;
-    switch (e->keysym.sym) {
-    case SDLK_p: case SDLK_b: if (!cmd) set_tool(a, T_PENCIL); break;
-    case SDLK_l: if (!cmd) set_tool(a, T_LINE); break;
-    case SDLK_o: if (!cmd) set_tool(a, T_ELLIPSE); break;
-    case SDLK_f: if (!cmd) set_tool(a, T_FILL); break;
-    case SDLK_e: case SDLK_x: if (!cmd) set_tool(a, T_ERASER); break;
-    case SDLK_m: case SDLK_r: if (!cmd) set_tool(a, T_SELECT); break;
-    case SDLK_a:
+    bool cmd = (mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
+    switch (e->key) {
+    case SDLK_P: case SDLK_B: if (!cmd) set_tool(a, T_PENCIL); break;
+    case SDLK_L: if (!cmd) set_tool(a, T_LINE); break;
+    case SDLK_O: if (!cmd) set_tool(a, T_ELLIPSE); break;
+    case SDLK_F: if (!cmd) set_tool(a, T_FILL); break;
+    case SDLK_E: case SDLK_X: if (!cmd) set_tool(a, T_ERASER); break;
+    case SDLK_M: case SDLK_R: if (!cmd) set_tool(a, T_SELECT); break;
+    case SDLK_A:
         if (cmd) {
             end_drag(a);
             set_tool(a, T_SELECT);
@@ -1218,19 +1176,19 @@ static void handle_key(App *a, const SDL_KeyboardEvent *e) {
         break;
     case SDLK_LEFT: case SDLK_RIGHT: case SDLK_UP: case SDLK_DOWN: {
         if (a->dragging) break;
-        int step = (mod & KMOD_SHIFT) ? 4 : 1;
-        SDL_Keycode k = e->keysym.sym;
+        int step = (mod & SDL_KMOD_SHIFT) ? 4 : 1;
+        SDL_Keycode k = e->key;
         move_selection(a, k == SDLK_LEFT ? -step : k == SDLK_RIGHT ? step : 0,
                        k == SDLK_UP ? -step : k == SDLK_DOWN ? step : 0);
         break;
     }
     case SDLK_RETURN: case SDLK_KP_ENTER: if (!a->dragging) deselect(a); break;
-    case SDLK_g: if (!cmd) a->show_grid = !a->show_grid; break;
+    case SDLK_G: if (!cmd) a->show_grid = !a->show_grid; break;
     case SDLK_LEFTBRACKET: if (!cmd && !a->dragging) set_pattern(a, a->pattern - 1); break;
     case SDLK_RIGHTBRACKET: if (!cmd && !a->dragging) set_pattern(a, a->pattern + 1); break;
-    case SDLK_z: if (cmd) run_action(a, A_UNDO); break;
-    case SDLK_s: if (cmd) run_action(a, A_SAVE); break;
-    case SDLK_n: if (cmd) run_action(a, A_CLEAR); break;
+    case SDLK_Z: if (cmd) run_action(a, A_UNDO); break;
+    case SDLK_S: if (cmd) run_action(a, A_SAVE); break;
+    case SDLK_N: if (cmd) run_action(a, A_CLEAR); break;
     case SDLK_DELETE: case SDLK_BACKSPACE:
         if (a->dragging) break;
         if (a->sel_on) delete_selection(a);
@@ -1248,7 +1206,7 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
@@ -1260,17 +1218,9 @@ int main(int argc, char **argv) {
     autosave_path(a->save_path, sizeof a->save_path);
     autoload(a);
 
-    a->win = SDL_CreateWindow("TinyPainter", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 820,
-                              720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    if (!a->win) {
-        fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-        return 1;
-    }
-    SDL_SetWindowMinimumSize(a->win, 360, 300);
-    a->ren = SDL_CreateRenderer(a->win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!a->ren) a->ren = SDL_CreateRenderer(a->win, -1, SDL_RENDERER_SOFTWARE);
-    if (!a->ren) {
-        fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
+    if (!tiny_create_window("TinyPainter", 820, 720, 360, 300, &a->win, &a->ren) ||
+        !tiny_font_init(&a->font, a->ren)) {
+        SDL_Quit();
         return 1;
     }
     update_title(a);
@@ -1282,31 +1232,33 @@ int main(int argc, char **argv) {
         if (!SDL_WaitEventTimeout(&e, 250)) continue;
         do {
             switch (e.type) {
-            case SDL_QUIT:
+            case SDL_EVENT_QUIT:
                 running = false;
                 break;
-            case SDL_MOUSEBUTTONDOWN:
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 handle_mouse_down(a, &e.button);
                 break;
-            case SDL_MOUSEBUTTONUP:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
                 if (a->dragging && e.button.button == a->drag_button) end_drag(a);
                 break;
-            case SDL_MOUSEMOTION:
-                a->shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
+            case SDL_EVENT_MOUSE_MOTION:
+                a->shift = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
                 handle_motion(a);
                 break;
-            case SDL_WINDOWEVENT:
-                if (e.window.event == SDL_WINDOWEVENT_LEAVE) a->hover = false;
-                if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) end_drag(a);
+            case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+                a->hover = false;
                 break;
-            case SDL_KEYDOWN:
-            case SDL_KEYUP: {
-                bool shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+                end_drag(a);
+                break;
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP: {
+                bool shift = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
                 if (shift != a->shift) {
                     a->shift = shift;
                     update_overlay(a);
                 }
-                if (e.type == SDL_KEYDOWN) handle_key(a, &e.key);
+                if (e.type == SDL_EVENT_KEY_DOWN) handle_key(a, &e.key);
                 break;
             }
             default:
@@ -1319,6 +1271,7 @@ int main(int argc, char **argv) {
     end_drag(a);
     deselect(a);
     autosave(a);
+    tiny_font_free(&a->font);
     SDL_DestroyRenderer(a->ren);
     SDL_DestroyWindow(a->win);
     SDL_Quit();
