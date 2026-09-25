@@ -1,6 +1,4 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+# musicnotes
 
 ## What this is
 
@@ -8,14 +6,7 @@ A small, utilitarian on-screen piano for going from a sound you hear to written 
 
 ## Commands
 
-```sh
-cmake -S . -B build                         # configure (needs Homebrew sdl3, sdl3_ttf)
-cmake --build build -j                      # build app + tests
-./build/musicnotes                          # run the app
-ln -sfn "$PWD/build/musicnotes" ~/.local/bin/nts  # `nts` launcher (already set up; points at build/)
-ctest --test-dir build --output-on-failure  # run tests
-./build/musiccore_tests                     # run tests directly (all checks print on failure)
-```
+Built from the repo root (see `../CLAUDE.md`): `cmake --build build --target musicnotes`, run `./build/bin/musicnotes` (launcher `nts`), test with `./build/bin/musiccore_tests`.
 
 There is a single test executable (`tests/core_tests.cpp`) with a tiny `CHECK`/`CHECK_EQ` harness and no framework; add test functions there and call them from `main`.
 
