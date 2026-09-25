@@ -39,5 +39,7 @@ Shapes can start or extend into the border, but only the part inside the canvas 
   (macOS: `~/Library/Application Support/TinyPainter/TinyPainter/canvas.bin`).
 - **Save as bitmap** writes a 1-bit 32x32 BMP to `~/Pictures/TinyPainter-<timestamp>.bmp`.
   If that folder isn't available, it saves to your home folder instead.
+- A small preview at about twice actual size (2 points per pixel) sits at the end of the toolbar. It moves beside or below
+  the canvas when the toolbar is short, and hides in very small windows.
 - The window is resizable. The canvas scales to integer pixel sizes and the toolbar moves
   to the left or top, whichever leaves more room for the canvas.

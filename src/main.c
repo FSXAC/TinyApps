@@ -275,6 +275,8 @@ typedef struct {
     Rect view;
     Rect tool_rects[TOOL_COUNT];
     Rect action_rects[ACTION_COUNT];
+    Rect mini;        /* minimap preview; w == 0 when hidden */
+    int mini_scale;
 
     char save_path[1024];
 } App;
@@ -637,9 +639,22 @@ static void layout(App *a) {
     int best_cell = -1;
     for (int vertical = 1; vertical >= 0; vertical--) {
         int along = vertical ? rh : rw;
-        int b = (along - 2 * pad - gap - (nbtn - 1) * (pad / 2)) / nbtn;
-        if (b > base_btn) b = base_btn;
-        if (b < 20) b = 20;
+        /* Minimap at ~2 points per pixel, placed after the buttons. It is
+           dropped when keeping it would squeeze the buttons too much. */
+        int ms = (int)(2 * a->dpi + 0.5f);
+        if (ms < 1) ms = 1;
+        int b = 0;
+        bool mini = true;
+        for (;; mini = false) {
+            int room = along - 2 * pad - gap - (nbtn - 1) * (pad / 2);
+            if (mini) room -= gap + CANVAS * ms + 2;
+            b = room / nbtn;
+            if (b > base_btn) b = base_btn;
+            if (b < 20) b = 20;
+            if (!mini) break;
+            if (b >= (int)(36 * a->dpi) && CANVAS * ms + 2 <= b + pad) break;
+        }
+        int msz = mini ? CANVAS * ms + 2 : 0;
         int bar = b + 2 * pad;
         int aw = vertical ? rw - bar : rw;
         int ah = vertical ? rh : rh - bar;
@@ -653,7 +668,7 @@ static void layout(App *a) {
         a->view.w = a->view.h = size;
         a->view.x = (vertical ? bar : 0) + (aw - size) / 2;
         a->view.y = (vertical ? 0 : bar) + (ah - size) / 2;
-        int total = nbtn * b + (nbtn - 1) * (pad / 2) + gap;
+        int total = nbtn * b + (nbtn - 1) * (pad / 2) + gap + (mini ? gap + msz : 0);
         int pos = (along - total) / 2;
         if (pos < pad) pos = pad;
         for (int i = 0; i < nbtn; i++) {
@@ -662,6 +677,26 @@ static void layout(App *a) {
             if (i < TOOL_COUNT) a->tool_rects[i] = r;
             else a->action_rects[i - TOOL_COUNT] = r;
             pos += b + pad / 2;
+        }
+        a->mini_scale = ms;
+        a->mini = (Rect){0, 0, 0, 0};
+        if (mini) {
+            pos += gap - pad / 2;
+            int off = pad + (b - msz) / 2;
+            a->mini = vertical ? (Rect){off, pos, msz, msz} : (Rect){pos, off, msz, msz};
+        } else {
+            /* No room in the toolbar: use spare space beside/below the canvas. */
+            int right = rw - (a->view.x + a->view.w), below = rh - (a->view.y + a->view.h);
+            for (; ms >= 1 && !a->mini.w; ms--) {
+                msz = CANVAS * ms + 2;
+                if (right >= msz + 2 * pad)
+                    a->mini = (Rect){rw - pad - msz, a->view.y, msz, msz};
+                else if (below >= msz + 2 * pad)
+                    a->mini = (Rect){a->view.x, rh - pad - msz, msz, msz};
+                else
+                    continue;
+                a->mini_scale = ms;
+            }
         }
     }
 }
@@ -756,6 +791,21 @@ static void render(App *a) {
     for (int i = 0; i < ACTION_COUNT; i++)
         draw_button(a, a->action_rects[i], &ACTION_BUTTONS[i], false,
                     in_rect(a->action_rects[i], rx, ry));
+
+    if (a->mini.w) {
+        Rect m = a->mini;
+        int ms = a->mini_scale;
+        Image out;
+        composite(a, &out);
+        SDL_SetRenderDrawColor(r, 20, 20, 22, 255);
+        fill_rect(r, m.x, m.y, m.w, m.h);
+        SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+        fill_rect(r, m.x + 1, m.y + 1, m.w - 2, m.h - 2);
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+        for (int y = 0; y < CANVAS; y++)
+            for (int x = 0; x < CANVAS; x++)
+                if (out.px[y][x] == BLACK) fill_rect(r, m.x + 1 + x * ms, m.y + 1 + y * ms, ms, ms);
+    }
 
     int c = a->cell;
     int ox = a->view.x, oy = a->view.y;
