@@ -232,6 +232,35 @@ static const ButtonDef ACTION_BUTTONS[ACTION_COUNT] = {
 static const char *TOOL_NAMES[TOOL_COUNT] = {"Pencil", "Line", "Ellipse", "Fill", "Eraser", "Select"};
 
 /* ------------------------------------------------------------------ */
+/* MacPaint-style 8x8 fill patterns ('#' = black). Patterns tile from the
+   canvas origin, so adjacent fills line up seamlessly. The first row of the
+   palette is an ordered-dither gray ramp, the second row textures. */
+
+#define PATTERN_COUNT 16
+static const char *PATTERNS[PATTERN_COUNT][8] = {
+    /* 100% */ {"########", "########", "########", "########", "########", "########", "########", "########"},
+    /* 87.5% */ {".###.###", "########", "###.###.", "########", ".###.###", "########", "###.###.", "########"},
+    /* 75% */ {".###.###", "##.###.#", ".###.###", "##.###.#", ".###.###", "##.###.#", ".###.###", "##.###.#"},
+    /* 50% */ {"#.#.#.#.", ".#.#.#.#", "#.#.#.#.", ".#.#.#.#", "#.#.#.#.", ".#.#.#.#", "#.#.#.#.", ".#.#.#.#"},
+    /* 25% */ {"#...#...", "..#...#.", "#...#...", "..#...#.", "#...#...", "..#...#.", "#...#...", "..#...#."},
+    /* 12.5% */ {"#...#...", "........", "..#...#.", "........", "#...#...", "........", "..#...#.", "........"},
+    /* 6.25% */ {"#.......", "........", "....#...", "........", "#.......", "........", "....#...", "........"},
+    /* 0% */ {"........", "........", "........", "........", "........", "........", "........", "........"},
+    /* horizontal */ {"########", "........", "........", "........", "########", "........", "........", "........"},
+    /* vertical */ {"#...#...", "#...#...", "#...#...", "#...#...", "#...#...", "#...#...", "#...#...", "#...#..."},
+    /* diagonal \ */ {"#...#...", ".#...#..", "..#...#.", "...#...#", "#...#...", ".#...#..", "..#...#.", "...#...#"},
+    /* diagonal / */ {"...#...#", "..#...#.", ".#...#..", "#...#...", "...#...#", "..#...#.", ".#...#..", "#...#..."},
+    /* grid */ {"########", "#.......", "#.......", "#.......", "#.......", "#.......", "#.......", "#......."},
+    /* bricks */ {"########", "#.......", "#.......", "#.......", "########", "....#...", "....#...", "....#..."},
+    /* crosshatch */ {"#......#", ".#....#.", "..#..#..", "...##...", "...##...", "..#..#..", ".#....#.", "#......#"},
+    /* polka dots */ {"........", ".##.....", ".##.....", "........", "........", ".....##.", ".....##.", "........"},
+};
+
+static int pattern_at(int pat, int x, int y) {
+    return PATTERNS[pat][y & 7][x & 7] == '#' ? BLACK : WHITE;
+}
+
+/* ------------------------------------------------------------------ */
 /* Application state.                                                   */
 
 typedef struct {
@@ -243,6 +272,7 @@ typedef struct {
     int undo_count;
 
     Tool tool;
+    int pattern;  /* fill pattern index */
     bool show_grid;
 
     /* Active drag. */
@@ -275,6 +305,7 @@ typedef struct {
     Rect view;
     Rect tool_rects[TOOL_COUNT];
     Rect action_rects[ACTION_COUNT];
+    Rect pattern_rects[PATTERN_COUNT];
     Rect mini;        /* minimap preview; w == 0 when hidden */
     int mini_scale;
 
@@ -309,6 +340,7 @@ static void autosave(App *a) {
     FILE *f = fopen(tmp, "wb");
     if (!f) return;
     bool ok = fwrite(&out, sizeof out, 1, f) == 1;
+    ok = fputc(a->pattern, f) != EOF && ok;
     ok = (fclose(f) == 0) && ok;
     if (ok) rename(tmp, a->save_path);
     else remove(tmp);
@@ -322,6 +354,8 @@ static void autoload(App *a) {
         for (int y = 0; y < CANVAS; y++)
             for (int x = 0; x < CANVAS; x++) tmp.px[y][x] = tmp.px[y][x] ? BLACK : WHITE;
         a->img = tmp;
+        int pat = fgetc(f); /* optional trailing byte: selected pattern */
+        if (pat != EOF && pat < PATTERN_COUNT) a->pattern = pat;
     }
     fclose(f);
 }
@@ -557,24 +591,28 @@ static void raster_ellipse(App *a, int x0, int y0, int x1, int y1, int color, Pl
     }
 }
 
-static void flood_fill(App *a, int x, int y, int color) {
+/* Fills the 4-connected region of same-colored pixels around (x, y) with
+   pattern `pat`, or with solid white when `pat` < 0. */
+static void flood_fill(App *a, int x, int y, int pat) {
     if (x < 0 || y < 0 || x >= CANVAS || y >= CANVAS) return;
     int target = a->img.px[y][x];
-    if (target == color) return;
-    static int stack[CANVAS * CANVAS * 4 + 1][2];
+    static bool seen[CANVAS][CANVAS];
+    static int stack[CANVAS * CANVAS][2];
+    memset(seen, 0, sizeof seen);
     int sp = 0;
+    seen[y][x] = true;
     stack[sp][0] = x; stack[sp][1] = y; sp++;
     while (sp) {
         sp--;
         int cx = stack[sp][0], cy = stack[sp][1];
-        if (cx < 0 || cy < 0 || cx >= CANVAS || cy >= CANVAS) continue;
-        if (a->img.px[cy][cx] != target) continue;
-        a->img.px[cy][cx] = (uint8_t)color;
+        a->img.px[cy][cx] = (uint8_t)(pat < 0 ? WHITE : pattern_at(pat, cx, cy));
         static const int d[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
         for (int i = 0; i < 4; i++) {
-            stack[sp][0] = cx + d[i][0];
-            stack[sp][1] = cy + d[i][1];
-            sp++;
+            int nx = cx + d[i][0], ny = cy + d[i][1];
+            if (nx < 0 || ny < 0 || nx >= CANVAS || ny >= CANVAS) continue;
+            if (seen[ny][nx] || a->img.px[ny][nx] != target) continue;
+            seen[ny][nx] = true;
+            stack[sp][0] = nx; stack[sp][1] = ny; sp++;
         }
     }
 }
@@ -656,9 +694,29 @@ static void layout(App *a) {
         }
         int msz = mini ? CANVAS * ms + 2 : 0;
         int bar = b + 2 * pad;
+        int ax = vertical ? bar : 0, ay = vertical ? 0 : bar;
         int aw = vertical ? rw - bar : rw;
         int ah = vertical ? rh : rh - bar;
-        int avail = (aw < ah ? aw : ah) - 2 * pad;
+
+        /* Pattern palette below the canvas: one row of swatches if they stay
+           reasonably large, otherwise two rows. */
+        int sg = (int)(4 * a->dpi);
+        int sw_max = ah / 20; /* keep the palette modest next to the canvas */
+        if (sw_max > (int)(28 * a->dpi)) sw_max = (int)(28 * a->dpi);
+        if (sw_max < (int)(12 * a->dpi)) sw_max = (int)(12 * a->dpi);
+        int cols = PATTERN_COUNT;
+        int sw = (aw - 2 * pad - (cols - 1) * sg) / cols;
+        if (sw < (int)(14 * a->dpi) && sw < sw_max) {
+            cols = PATTERN_COUNT / 2;
+            sw = (aw - 2 * pad - (cols - 1) * sg) / cols;
+        }
+        if (sw > sw_max) sw = sw_max;
+        if (sw < 8) sw = 8;
+        int rows = (PATTERN_COUNT + cols - 1) / cols;
+        int strip = pad + rows * sw + (rows - 1) * sg; /* includes gap above */
+
+        int avail_w = aw - 2 * pad, avail_h = ah - 2 * pad - strip;
+        int avail = avail_w < avail_h ? avail_w : avail_h;
         int cell = avail / VIEW;
         if (cell < 1) cell = 1;
         if (cell <= best_cell) continue;
@@ -666,8 +724,16 @@ static void layout(App *a) {
         a->cell = cell;
         int size = cell * VIEW;
         a->view.w = a->view.h = size;
-        a->view.x = (vertical ? bar : 0) + (aw - size) / 2;
-        a->view.y = (vertical ? 0 : bar) + (ah - size) / 2;
+        a->view.x = ax + (aw - size) / 2;
+        a->view.y = ay + (ah - size - strip) / 2;
+        if (a->view.y < ay + pad) a->view.y = ay + pad;
+
+        int row_w = cols * sw + (cols - 1) * sg;
+        int px0 = ax + (aw - row_w) / 2, py0 = a->view.y + size + pad;
+        for (int i = 0; i < PATTERN_COUNT; i++)
+            a->pattern_rects[i] =
+                (Rect){px0 + (i % cols) * (sw + sg), py0 + (i / cols) * (sw + sg), sw, sw};
+        int strip_bottom = py0 + rows * sw + (rows - 1) * sg;
         int total = nbtn * b + (nbtn - 1) * (pad / 2) + gap + (mini ? gap + msz : 0);
         int pos = (along - total) / 2;
         if (pos < pad) pos = pad;
@@ -686,10 +752,10 @@ static void layout(App *a) {
             a->mini = vertical ? (Rect){off, pos, msz, msz} : (Rect){pos, off, msz, msz};
         } else {
             /* No room in the toolbar: use spare space beside/below the canvas. */
-            int right = rw - (a->view.x + a->view.w), below = rh - (a->view.y + a->view.h);
+            int right = rw - (a->view.x + a->view.w), below = rh - strip_bottom;
             for (; ms >= 1 && !a->mini.w; ms--) {
                 msz = CANVAS * ms + 2;
-                if (right >= msz + 2 * pad)
+                if (right >= msz + 2 * pad && msz <= a->view.h)
                     a->mini = (Rect){rw - pad - msz, a->view.y, msz, msz};
                 else if (below >= msz + 2 * pad)
                     a->mini = (Rect){a->view.x, rh - pad - msz, msz, msz};
@@ -776,6 +842,31 @@ static void draw_button(App *a, Rect rc, const ButtonDef *def, bool active, bool
         draw_text(r, def->label, rc.x + (rc.w - label_w) / 2, rc.y + rc.h - label_h - 4 * ls, ls);
 }
 
+static void draw_swatch(App *a, Rect rc, int pat, bool active, bool hot) {
+    SDL_Renderer *r = a->ren;
+    int t = (int)(2 * a->dpi + 0.5f);
+    if (active) SDL_SetRenderDrawColor(r, 0, 110, 255, 255);
+    else if (hot) SDL_SetRenderDrawColor(r, 150, 150, 158, 255);
+    else SDL_SetRenderDrawColor(r, 20, 20, 22, 255);
+    fill_rect(r, rc.x - t, rc.y - t, rc.w + 2 * t, rc.h + 2 * t);
+    if (active) {
+        SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+        fill_rect(r, rc.x - t / 2, rc.y - t / 2, rc.w + t / 2 * 2, rc.h + t / 2 * 2);
+    }
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+    fill_rect(r, rc.x, rc.y, rc.w, rc.h);
+    /* Pattern pixels drawn large enough to read, tiled from the top-left. */
+    int ps = rc.w / 12;
+    if (ps < 1) ps = 1;
+    SDL_Rect clip = {rc.x, rc.y, rc.w, rc.h};
+    SDL_RenderSetClipRect(r, &clip);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+    for (int y = 0; y * ps < rc.h; y++)
+        for (int x = 0; x * ps < rc.w; x++)
+            if (pattern_at(pat, x, y) == BLACK) fill_rect(r, rc.x + x * ps, rc.y + y * ps, ps, ps);
+    SDL_RenderSetClipRect(r, NULL);
+}
+
 static void render(App *a) {
     SDL_Renderer *r = a->ren;
     layout(a);
@@ -791,6 +882,9 @@ static void render(App *a) {
     for (int i = 0; i < ACTION_COUNT; i++)
         draw_button(a, a->action_rects[i], &ACTION_BUTTONS[i], false,
                     in_rect(a->action_rects[i], rx, ry));
+    for (int i = 0; i < PATTERN_COUNT; i++)
+        draw_swatch(a, a->pattern_rects[i], i, a->pattern == i,
+                    in_rect(a->pattern_rects[i], rx, ry));
 
     if (a->mini.w) {
         Rect m = a->mini;
@@ -916,7 +1010,10 @@ static void render(App *a) {
 
 static void update_title(App *a) {
     char title[128];
-    snprintf(title, sizeof title, "TinyPainter - %s", TOOL_NAMES[a->tool]);
+    if (a->tool == T_FILL)
+        snprintf(title, sizeof title, "TinyPainter - Fill (pattern %d)", a->pattern + 1);
+    else
+        snprintf(title, sizeof title, "TinyPainter - %s", TOOL_NAMES[a->tool]);
     SDL_SetWindowTitle(a->win, title);
 }
 
@@ -933,7 +1030,7 @@ static void begin_drag(App *a, int button, int cx, int cy, int color) {
     if (a->tool == T_PENCIL || a->tool == T_ERASER) {
         plot_canvas(a, cx, cy, color);
     } else if (a->tool == T_FILL) {
-        flood_fill(a, cx, cy, color);
+        flood_fill(a, cx, cy, color == BLACK ? a->pattern : -1);
         a->dragging = false;
         settle_undo(a);
         autosave(a);
@@ -1038,6 +1135,14 @@ static void set_tool(App *a, Tool t) {
     update_title(a);
 }
 
+/* Picking a pattern also switches to the fill tool, which is what uses it. */
+static void set_pattern(App *a, int pat) {
+    a->pattern = (pat % PATTERN_COUNT + PATTERN_COUNT) % PATTERN_COUNT;
+    if (a->tool != T_FILL) set_tool(a, T_FILL);
+    update_title(a);
+    autosave(a);
+}
+
 static void run_action(App *a, Action act) {
     end_drag(a);
     switch (act) {
@@ -1062,6 +1167,8 @@ static void handle_mouse_down(App *a, const SDL_MouseButtonEvent *e) {
             if (in_rect(a->tool_rects[i], rx, ry)) { set_tool(a, (Tool)i); return; }
         for (int i = 0; i < ACTION_COUNT; i++)
             if (in_rect(a->action_rects[i], rx, ry)) { run_action(a, (Action)i); return; }
+        for (int i = 0; i < PATTERN_COUNT; i++)
+            if (in_rect(a->pattern_rects[i], rx, ry)) { set_pattern(a, i); return; }
     }
     if (e->button != SDL_BUTTON_LEFT && e->button != SDL_BUTTON_RIGHT) return;
     if (!to_cell(a, rx, ry, &cx, &cy)) return;
@@ -1119,6 +1226,8 @@ static void handle_key(App *a, const SDL_KeyboardEvent *e) {
     }
     case SDLK_RETURN: case SDLK_KP_ENTER: if (!a->dragging) deselect(a); break;
     case SDLK_g: if (!cmd) a->show_grid = !a->show_grid; break;
+    case SDLK_LEFTBRACKET: if (!cmd && !a->dragging) set_pattern(a, a->pattern - 1); break;
+    case SDLK_RIGHTBRACKET: if (!cmd && !a->dragging) set_pattern(a, a->pattern + 1); break;
     case SDLK_z: if (cmd) run_action(a, A_UNDO); break;
     case SDLK_s: if (cmd) run_action(a, A_SAVE); break;
     case SDLK_n: if (cmd) run_action(a, A_CLEAR); break;
