@@ -11,8 +11,8 @@
 #include "keymap.h"
 #include "note_log.h"
 #include "synth.h"
-#include "text.h"
 #include "theory.h"
+#include "tiny.h"
 
 namespace {
 
@@ -29,34 +29,23 @@ constexpr float kMargin = 16;
 // Layout, in logical pixels.
 constexpr float kHeaderY = 16;
 constexpr float kHeaderH = 34;
+constexpr float kArrowW = 34;
+constexpr float kRangeW = 120;  // octave range label between the arrows
+constexpr float kButtonW = 96;
 constexpr SDL_FRect kLogPanel = {kMargin, 64, kWidth - 2 * kMargin, 148};
 constexpr float kLogPad = 14;
-constexpr float kLogLineH = 28;
-constexpr int kLogFontSize = 20;
+constexpr float kLogLineH = 30;
 constexpr float kStatusY = 222;
 constexpr SDL_FRect kKeyboard = {kMargin, 252, kWidth - 2 * kMargin, 166};
 constexpr float kHelpY = 428;
 
-constexpr SDL_Color kBg{24, 25, 28, 255};
-constexpr SDL_Color kPanel{34, 36, 41, 255};
-constexpr SDL_Color kText{232, 232, 235, 255};
-constexpr SDL_Color kDim{128, 132, 140, 255};
-constexpr SDL_Color kAccent{104, 162, 255, 255};
-constexpr SDL_Color kButton{44, 47, 54, 255};
-constexpr SDL_Color kButtonHover{58, 62, 71, 255};
-constexpr SDL_Color kKeyGap{8, 8, 10, 255};
-constexpr SDL_Color kWhiteKey{244, 244, 246, 255};
-constexpr SDL_Color kWhiteKeyDown{164, 198, 255, 255};
-constexpr SDL_Color kWhiteLabel{96, 98, 106, 255};
-constexpr SDL_Color kWhiteLabelC{28, 30, 34, 255};
-constexpr SDL_Color kWhiteHint{178, 181, 188, 255};
-constexpr SDL_Color kWhiteHintDown{92, 122, 180, 255};
-constexpr SDL_Color kBlackKey{22, 23, 26, 255};
-constexpr SDL_Color kBlackKeyTop{46, 48, 54, 255};
-constexpr SDL_Color kBlackKeyDown{48, 98, 206, 255};
-constexpr SDL_Color kBlackKeyDownTop{72, 128, 232, 255};
-constexpr SDL_Color kBlackLabel{205, 208, 214, 255};
-constexpr SDL_Color kBlackHint{118, 122, 130, 255};
+// Logical pixels are points, i.e. one design unit (see common/DESIGN.md).
+constexpr int kU = 1;
+constexpr int kCaption = TINY_CAPTION * kU;
+constexpr int kBody = TINY_BODY * kU;
+constexpr int kTitle = TINY_TITLE * kU;
+
+int ix(float v) { return static_cast<int>(std::lround(v)); }
 
 bool isBlack(int pc) { return pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10; }
 
@@ -83,19 +72,13 @@ class App {
   void releaseAll();
   void perform(Action a);
   void handleEvent(SDL_Event& e);
-  void updateTextScale();
 
   SDL_FRect keyRect(int offset) const;
   int keyAt(float x, float y) const;
 
   void draw();
-  // Draws text with its top-left at (x, y); returns its width.
-  float drawText(float x, float y, const std::string& s, Face face, int size, SDL_Color c);
-  float textWidth(const std::string& s, Face face, int size);
-  void fillRect(const SDL_FRect& r, SDL_Color c);
-  // Per-corner radii: top-left, top-right, bottom-right, bottom-left.
-  void fillRound(const SDL_FRect& r, std::array<float, 4> radii, SDL_Color c);
-  void fillRound(const SDL_FRect& r, float radius, SDL_Color c) { fillRound(r, {radius, radius, radius, radius}, c); }
+  // Draws text with its top-left at (x, y) in the given color; returns its width.
+  int drawText(float x, float y, const std::string& s, int scale, TinyStyle st, TinyColor c);
   void drawHeader();
   void drawLog();
   void drawKeyboard();
@@ -104,7 +87,7 @@ class App {
   SDL_Renderer* renderer_ = nullptr;
   SDL_AudioStream* stream_ = nullptr;
   std::vector<float> audioBuf_;
-  TextCache text_;
+  TinyFont font_{};
 
   Synth synth_{kSampleRate};
   NoteLog log_;
@@ -134,8 +117,7 @@ bool App::init() {
   }
   SDL_SetRenderLogicalPresentation(renderer_, kWidth, kHeight, SDL_LOGICAL_PRESENTATION_LETTERBOX);
   SDL_SetRenderVSync(renderer_, 1);
-  if (!text_.init(renderer_)) return false;
-  updateTextScale();
+  if (!tiny_font_init(&font_, renderer_)) return false;
 
   const SDL_AudioSpec spec{SDL_AUDIO_F32, 1, kSampleRate};
   stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audioCallback, this);
@@ -146,28 +128,23 @@ bool App::init() {
   }
 
   const float y = kHeaderY;
+  constexpr float gap = TINY_PAD * kU;
   buttons_ = {
-      {{kMargin, y, 34, kHeaderH}, "‹", Action::OctaveDown},
-      {{kMargin + 34 + 100, y, 34, kHeaderH}, "›", Action::OctaveUp},
-      {{kWidth - kMargin - 3 * 76 - 16, y, 76, kHeaderH}, "Copy", Action::Copy},
-      {{kWidth - kMargin - 2 * 76 - 8, y, 76, kHeaderH}, "Undo", Action::Undo},
-      {{kWidth - kMargin - 76, y, 76, kHeaderH}, "Clear", Action::Clear},
+      {{kMargin, y, kArrowW, kHeaderH}, "‹", Action::OctaveDown},
+      {{kMargin + kArrowW + kRangeW, y, kArrowW, kHeaderH}, "›", Action::OctaveUp},
+      {{kWidth - kMargin - 3 * kButtonW - 2 * gap, y, kButtonW, kHeaderH}, "Copy", Action::Copy},
+      {{kWidth - kMargin - 2 * kButtonW - gap, y, kButtonW, kHeaderH}, "Undo", Action::Undo},
+      {{kWidth - kMargin - kButtonW, y, kButtonW, kHeaderH}, "Clear", Action::Clear},
   };
   return true;
 }
 
 void App::shutdown() {
   if (stream_) SDL_DestroyAudioStream(stream_);
-  text_.shutdown();
+  tiny_font_free(&font_);
   SDL_DestroyRenderer(renderer_);
   SDL_DestroyWindow(window_);
   SDL_Quit();
-}
-
-void App::updateTextScale() {
-  int w = 0, h = 0;
-  SDL_GetRenderOutputSize(renderer_, &w, &h);
-  text_.setScale(std::max(1.0f, std::min(w / float(kWidth), h / float(kHeight))));
 }
 
 // Runs on the audio thread with the stream lock held.
@@ -224,11 +201,6 @@ void App::handleEvent(SDL_Event& e) {
   switch (e.type) {
     case SDL_EVENT_QUIT:
       running_ = false;
-      break;
-
-    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-    case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
-      updateTextScale();
       break;
 
     case SDL_EVENT_KEY_DOWN: {
@@ -334,78 +306,35 @@ int App::keyAt(float x, float y) const {
   return -1;
 }
 
-void App::fillRect(const SDL_FRect& r, SDL_Color c) {
-  SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
-  SDL_RenderFillRect(renderer_, &r);
-}
-
-void App::fillRound(const SDL_FRect& r, std::array<float, 4> radii, SDL_Color c) {
-  constexpr int kSeg = 6;
-  constexpr int kPerimeter = 4 * (kSeg + 1);
-  constexpr float kPi = 3.14159265f;
-  const SDL_FColor fc{c.r / 255.f, c.g / 255.f, c.b / 255.f, c.a / 255.f};
-  // Corner arc centres, clockwise from top-left, with each arc's start angle.
-  const std::array<SDL_FPoint, 4> centres = {{{r.x + radii[0], r.y + radii[0]},
-                                              {r.x + r.w - radii[1], r.y + radii[1]},
-                                              {r.x + r.w - radii[2], r.y + r.h - radii[2]},
-                                              {r.x + radii[3], r.y + r.h - radii[3]}}};
-  std::array<SDL_Vertex, kPerimeter + 1> v{};
-  v[0] = {{r.x + r.w / 2, r.y + r.h / 2}, fc, {0, 0}};
-  int n = 1;
-  for (int corner = 0; corner < 4; ++corner) {
-    const float start = kPi + corner * kPi / 2;
-    for (int i = 0; i <= kSeg; ++i) {
-      const float a = start + i * (kPi / 2) / kSeg;
-      v[n++] = {{centres[corner].x + radii[corner] * std::cos(a),
-                 centres[corner].y + radii[corner] * std::sin(a)},
-                fc,
-                {0, 0}};
-    }
-  }
-  std::array<int, kPerimeter * 3> idx{};
-  for (int i = 0; i < kPerimeter; ++i) {
-    idx[i * 3] = 0;
-    idx[i * 3 + 1] = 1 + i;
-    idx[i * 3 + 2] = 1 + (i + 1) % kPerimeter;
-  }
-  SDL_RenderGeometry(renderer_, nullptr, v.data(), v.size(), idx.data(), idx.size());
-}
-
-float App::drawText(float x, float y, const std::string& s, Face face, int size, SDL_Color c) {
-  const TextCache::Text& t = text_.get(s, face, size, c);
-  if (t.tex) {
-    const SDL_FRect dst{std::round(x), std::round(y), t.w, t.h};
-    SDL_RenderTexture(renderer_, t.tex, nullptr, &dst);
-  }
-  return t.w;
-}
-
-float App::textWidth(const std::string& s, Face face, int size) {
-  return text_.get(s, face, size, kText).w;
+int App::drawText(float x, float y, const std::string& s, int scale, TinyStyle st, TinyColor c) {
+  tiny_set_color(renderer_, c);
+  return tiny_text(&font_, s.c_str(), ix(x), ix(y), scale, st);
 }
 
 void App::drawHeader() {
   const bool copied = SDL_GetTicks() < copiedUntil_;
   for (const auto& b : buttons_) {
-    const bool hover = SDL_PointInRectFloat(&mouse_, &b.rect);
-    fillRound(b.rect, 6, hover ? kButtonHover : kButton);
     const bool isCopy = b.action == Action::Copy;
+    const bool hover = SDL_PointInRectFloat(&mouse_, &b.rect);
+    // "Copied" confirmation shows as a pressed (inverted) button.
+    const TinyState st = isCopy && copied ? TINY_PRESSED : hover ? TINY_HOVER : TINY_NORMAL;
+    const TinyColor ink = tiny_button(renderer_, ix(b.rect.x), ix(b.rect.y), ix(b.rect.w), ix(b.rect.h), kU, st);
     const std::string label = isCopy && copied ? "Copied" : b.label;
-    const TextCache::Text& t = text_.get(label, Face::Ui, 15, isCopy && copied ? kAccent : kText);
-    drawText(b.rect.x + (b.rect.w - t.w) / 2, b.rect.y + (b.rect.h - t.h) / 2, label, Face::Ui, 15,
-             isCopy && copied ? kAccent : kText);
+    const int w = tiny_text_width(label.c_str(), kBody, TINY_BOLD);
+    drawText(b.rect.x + (b.rect.w - w) / 2, b.rect.y + (b.rect.h - tiny_text_height(kBody)) / 2, label, kBody,
+             TINY_BOLD, ink);
   }
 
   // Octave range between the arrow buttons.
   const std::string range = theory::noteName(baseNote()) + " – " +
                             theory::noteName(baseNote() + kVisibleSemitones - 1);
-  const TextCache::Text& t = text_.get(range, Face::Ui, 16, kText);
-  const float mid = kMargin + 34 + 50;
-  drawText(mid - t.w / 2, kHeaderY + (kHeaderH - t.h) / 2, range, Face::Ui, 16, kText);
+  const int w = tiny_text_width(range.c_str(), kBody, TINY_BOLD);
+  const float mid = kMargin + kArrowW + kRangeW / 2;
+  drawText(mid - w / 2.0f, kHeaderY + (kHeaderH - tiny_text_height(kBody)) / 2, range, kBody, TINY_BOLD, TINY_INK);
 }
 
 void App::drawLog() {
-  fillRound(kLogPanel, 8, kPanel);
+  tiny_panel(renderer_, ix(kLogPanel.x), ix(kLogPanel.y), ix(kLogPanel.w), ix(kLogPanel.h), kU);
 
   struct Token {
     const std::string* text;
@@ -417,18 +346,18 @@ void App::drawLog() {
   if (!pending.empty()) tokens.push_back({&pending, true});
 
   if (tokens.empty()) {
-    drawText(kLogPanel.x + kLogPad, kLogPanel.y + kLogPad, "Play something — notes show up here",
-             Face::Ui, 17, kDim);
+    drawText(kLogPanel.x + kLogPad, kLogPanel.y + kLogPad, "Play something — notes show up here", kBody,
+             TINY_PLAIN, TINY_DIM);
     return;
   }
 
   // Word-wrap, then show the most recent lines that fit.
   const float maxW = kLogPanel.w - 2 * kLogPad;
-  const float space = textWidth(" ", Face::Mono, kLogFontSize);
+  const float space = tiny_text_width(" ", kTitle, TINY_PLAIN) + kTitle;
   std::vector<std::vector<Token>> lines(1);
   float used = 0;
   for (const auto& t : tokens) {
-    const float w = textWidth(*t.text, Face::Mono, kLogFontSize);
+    const float w = tiny_text_width(t.text->c_str(), kTitle, TINY_PLAIN);
     if (used > 0 && used + space + w > maxW) {
       lines.emplace_back();
       used = 0;
@@ -442,14 +371,26 @@ void App::drawLog() {
   for (size_t i = first; i < lines.size(); ++i) {
     float x = kLogPanel.x + kLogPad;
     const float y = kLogPanel.y + kLogPad + (i - first) * kLogLineH;
-    for (const Token& t : lines[i])
-      x += drawText(x, y, *t.text, Face::Mono, kLogFontSize, t.pending ? kAccent : kText) + space;
+    for (const Token& t : lines[i]) {
+      if (t.pending) {
+        // The group still being held is highlighted like a selection: inverted.
+        const int w = tiny_text_width(t.text->c_str(), kTitle, TINY_PLAIN);
+        const int pad = TINY_GAP * kU;
+        tiny_set_color(renderer_, TINY_INK);
+        tiny_fill_round(renderer_, ix(x) - pad, ix(y) - pad, w + 2 * pad, tiny_line_height(kTitle) - kTitle + 2 * pad,
+                        TINY_RADIUS_SMALL, kU, TINY_CORNERS);
+      }
+      x += drawText(x, y, *t.text, kTitle, TINY_PLAIN, t.pending ? TINY_PAPER : TINY_INK) + space;
+    }
   }
 }
 
 void App::drawKeyboard() {
-  fillRect({kKeyboard.x - 1, kKeyboard.y - 4, kKeyboard.w + 2, kKeyboard.h + 5}, kKeyGap);
+  tiny_set_color(renderer_, TINY_INK);
+  tiny_fill_rect(renderer_, ix(kKeyboard.x) - kU, ix(kKeyboard.y) - 4 * kU, ix(kKeyboard.w) + 2 * kU,
+                 ix(kKeyboard.h) + 5 * kU);
 
+  // Pressed keys invert: white keys go ink, black keys go paper.
   for (int pass = 0; pass < 2; ++pass) {  // whites first so blacks draw on top
     for (int off = 0; off < kVisibleSemitones; ++off) {
       const int pc = off % 12;
@@ -458,39 +399,36 @@ void App::drawKeyboard() {
       const bool down = midi <= 127 && holdCount_[midi] > 0;
       const std::string name = theory::noteName(midi);
       const char* hint = keyLabel(off);
-      SDL_FRect r = keyRect(off);
+      const SDL_FRect kr = keyRect(off);
+      const int x = ix(kr.x), y = ix(kr.y), w = ix(kr.x + kr.w) - x, h = ix(kr.h);
+      const float cx = kr.x + kr.w / 2;
 
       if (!isBlack(pc)) {
-        r.x += 1;
-        r.w -= 2;
-        fillRound(r, {0, 0, 5, 5}, down ? kWhiteKeyDown : kWhiteKey);
-        const float cx = r.x + r.w / 2;
-        const SDL_Color nameColor = pc == 0 ? kWhiteLabelC : kWhiteLabel;
-        const float nw = textWidth(name, Face::Ui, 14);
-        drawText(cx - nw / 2, r.y + r.h - 26, name, Face::Ui, 14, nameColor);
-        if (hint) {
-          const float hw = textWidth(hint, Face::Ui, 11);
-          drawText(cx - hw / 2, r.y + r.h - 44, hint, Face::Ui, 11, down ? kWhiteHintDown : kWhiteHint);
-        }
+        tiny_set_color(renderer_, down ? TINY_INK : TINY_PAPER);
+        tiny_fill_round(renderer_, x + kU, y, w - 2 * kU, h, TINY_RADIUS_SMALL, kU, TINY_BL | TINY_BR);
+        const TinyStyle st = pc == 0 ? TINY_BOLD : TINY_PLAIN;  // C anchors each octave
+        const TinyColor nameColor = down ? TINY_PAPER : pc == 0 ? TINY_INK : TINY_DIM;
+        const int nameY = y + h - 12 * kU - tiny_text_height(kBody);
+        drawText(cx - tiny_text_width(name.c_str(), kBody, st) / 2.0f, nameY, name, kBody, st, nameColor);
+        if (hint)
+          drawText(cx - tiny_text_width(hint, kCaption, TINY_PLAIN) / 2.0f, nameY - TINY_PAD * kU - tiny_text_height(kCaption),
+                   hint, kCaption, TINY_PLAIN, down ? TINY_SHADE : TINY_GRAY);
       } else {
-        fillRound(r, {0, 0, 3, 3}, down ? kBlackKeyDown : kBlackKey);
-        // Lighter top face with a darker lip at the bottom reads as depth.
-        fillRound({r.x + 3, r.y, r.w - 6, r.h - (down ? 4 : 8)}, {0, 0, 2, 2},
-                  down ? kBlackKeyDownTop : kBlackKeyTop);
-        const float cx = r.x + r.w / 2;
-        const float nw = textWidth(name, Face::Ui, 11);
-        drawText(cx - nw / 2, r.y + r.h - 36, name, Face::Ui, 11, kBlackLabel);
-        if (hint) {
-          const float hw = textWidth(hint, Face::Ui, 10);
-          drawText(cx - hw / 2, r.y + r.h - 54, hint, Face::Ui, 10, kBlackHint);
-        }
+        tiny_frame_round(renderer_, x, y, w, h, TINY_RADIUS_SMALL, kU, TINY_BL | TINY_BR,
+                         down ? TINY_PAPER : TINY_INK, TINY_INK);
+        const int nameY = y + h - 10 * kU - tiny_text_height(kCaption);
+        drawText(cx - tiny_text_width(name.c_str(), kCaption, TINY_PLAIN) / 2.0f, nameY, name, kCaption, TINY_PLAIN,
+                 down ? TINY_INK : TINY_PAPER);
+        if (hint)
+          drawText(cx - tiny_text_width(hint, kCaption, TINY_PLAIN) / 2.0f, nameY - TINY_PAD * kU - tiny_text_height(kCaption),
+                   hint, kCaption, TINY_PLAIN, down ? TINY_DIM : TINY_GRAY);
       }
     }
   }
 }
 
 void App::draw() {
-  SDL_SetRenderDrawColor(renderer_, kBg.r, kBg.g, kBg.b, 255);
+  tiny_set_color(renderer_, TINY_PAPER);
   SDL_RenderClear(renderer_);
 
   drawHeader();
@@ -501,17 +439,17 @@ void App::draw() {
     std::string status;
     for (int n : held) status += theory::noteName(n) + "  ";
     if (std::string chord = theory::chordName(held); !chord.empty()) status += "→  " + chord;
-    drawText(kMargin + 2, kStatusY, status, Face::Ui, 15, kAccent);
+    drawText(kMargin + 2, kStatusY, status, kBody, TINY_BOLD, TINY_INK);
   }
 
   drawKeyboard();
 
   drawText(kMargin, kHelpY,
            "Tab – \\  white keys   ·   number row  black keys   ·   Z / X  octave   "
-           "·   Backspace  undo   ·   Esc  clear   ·   Cmd+C  copy",
-           Face::Ui, 12, kDim);
+           "·   Backspace  undo   ·   Esc  clear   ·   ⌘C  copy",
+           kCaption, TINY_PLAIN, TINY_DIM);
 
-  SDL_RenderPresent(renderer_);
+  tiny_present(renderer_);
 }
 
 // Event-driven: redraws only after input (or when the "Copied" flash expires),

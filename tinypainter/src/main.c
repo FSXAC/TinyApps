@@ -277,6 +277,7 @@ typedef struct {
 
     /* Layout (renderer pixels). */
     float dpi;
+    int unit;     /* design unit (see tiny_unit) */
     int cell;
     Rect view;
     Rect tool_rects[TOOL_COUNT];
@@ -642,6 +643,7 @@ static void layout(App *a) {
     SDL_GetWindowSize(a->win, &ww, &wh);
     SDL_GetRenderOutputSize(a->ren, &rw, &rh);
     a->dpi = ww > 0 ? (float)rw / (float)ww : 1.0f;
+    a->unit = tiny_unit(a->win, a->ren);
 
     const int nbtn = TOOL_COUNT + ACTION_COUNT;
     int pad = (int)(10 * a->dpi);
@@ -676,7 +678,7 @@ static void layout(App *a) {
 
         /* Pattern palette below the canvas: one row of swatches if they stay
            reasonably large, otherwise two rows. */
-        int sg = (int)(4 * a->dpi);
+        int sg = (int)(6 * a->dpi);
         int sw_max = ah / 20; /* keep the palette modest next to the canvas */
         if (sw_max > (int)(28 * a->dpi)) sw_max = (int)(28 * a->dpi);
         if (sw_max < (int)(12 * a->dpi)) sw_max = (int)(12 * a->dpi);
@@ -776,15 +778,12 @@ static void draw_icon(SDL_Renderer *r, const char **icon, int x, int y, int scal
 
 static void draw_button(App *a, Rect rc, const ButtonDef *def, bool active, bool hot) {
     SDL_Renderer *r = a->ren;
-    if (active) SDL_SetRenderDrawColor(r, 235, 235, 235, 255);
-    else if (hot) SDL_SetRenderDrawColor(r, 88, 88, 96, 255);
-    else SDL_SetRenderDrawColor(r, 62, 62, 68, 255);
-    tiny_fill_rect(r, rc.x, rc.y, rc.w, rc.h);
+    int u = a->unit;
+    TinyColor ink = tiny_button(r, rc.x, rc.y, rc.w, rc.h, u, active ? TINY_PRESSED : hot ? TINY_HOVER : TINY_NORMAL);
 
-    int ls = (int)(a->dpi + 0.5f);
-    if (ls < 1) ls = 1;
-    int label_h = 7 * ls;
-    int label_w = tiny_text_width(def->label, ls);
+    int ls = TINY_CAPTION * u;
+    int label_h = tiny_text_height(ls);
+    int label_w = tiny_text_width(def->label, ls, TINY_BOLD);
     bool show_label = rc.h >= (int)(52 * a->dpi) && label_w <= rc.w - 2 * ls;
 
     int icon_space = rc.h - (show_label ? label_h + 6 * ls : 0);
@@ -792,33 +791,35 @@ static void draw_button(App *a, Rect rc, const ButtonDef *def, bool active, bool
     if (scale < 1) scale = 1;
     int isz = 16 * scale;
 
-    if (active) SDL_SetRenderDrawColor(r, 20, 20, 20, 255);
-    else SDL_SetRenderDrawColor(r, 230, 230, 230, 255);
+    tiny_set_color(r, ink);
     int top = rc.y + (icon_space - isz) / 2 + (show_label ? 2 * ls : 0);
     draw_icon(r, def->icon, rc.x + (rc.w - isz) / 2, top, scale);
     if (show_label)
-        tiny_text(&a->font, def->label, rc.x + (rc.w - label_w) / 2, rc.y + rc.h - label_h - 4 * ls, ls);
+        tiny_text(&a->font, def->label, rc.x + (rc.w - label_w) / 2, rc.y + rc.h - label_h - 4 * ls, ls,
+                  TINY_BOLD);
 }
 
 static void draw_swatch(App *a, Rect rc, int pat, bool active, bool hot) {
     SDL_Renderer *r = a->ren;
-    int t = (int)(2 * a->dpi + 0.5f);
-    if (active) SDL_SetRenderDrawColor(r, 0, 110, 255, 255);
-    else if (hot) SDL_SetRenderDrawColor(r, 150, 150, 158, 255);
-    else SDL_SetRenderDrawColor(r, 20, 20, 22, 255);
-    tiny_fill_rect(r, rc.x - t, rc.y - t, rc.w + 2 * t, rc.h + 2 * t);
+    int u = a->unit;
+    /* Selected: double frame (ink, paper gap, ink). Hover: 2-unit frame. */
     if (active) {
-        SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
-        tiny_fill_rect(r, rc.x - t / 2, rc.y - t / 2, rc.w + t / 2 * 2, rc.h + t / 2 * 2);
+        tiny_set_color(r, TINY_INK);
+        tiny_fill_rect(r, rc.x - 3 * u, rc.y - 3 * u, rc.w + 6 * u, rc.h + 6 * u);
+        tiny_set_color(r, TINY_PAPER);
+        tiny_fill_rect(r, rc.x - 2 * u, rc.y - 2 * u, rc.w + 4 * u, rc.h + 4 * u);
     }
-    SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+    int f = hot && !active ? 2 * u : u;
+    tiny_set_color(r, TINY_INK);
+    tiny_fill_rect(r, rc.x - f, rc.y - f, rc.w + 2 * f, rc.h + 2 * f);
+    tiny_set_color(r, TINY_PAPER);
     tiny_fill_rect(r, rc.x, rc.y, rc.w, rc.h);
     /* Pattern pixels drawn large enough to read, tiled from the top-left. */
     int ps = rc.w / 12;
     if (ps < 1) ps = 1;
     SDL_Rect clip = {rc.x, rc.y, rc.w, rc.h};
     SDL_SetRenderClipRect(r, &clip);
-    SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+    tiny_set_color(r, TINY_INK);
     for (int y = 0; y * ps < rc.h; y++)
         for (int x = 0; x * ps < rc.w; x++)
             if (pattern_at(pat, x, y) == BLACK) tiny_fill_rect(r, rc.x + x * ps, rc.y + y * ps, ps, ps);
@@ -828,7 +829,7 @@ static void draw_swatch(App *a, Rect rc, int pat, bool active, bool hot) {
 static void render(App *a) {
     SDL_Renderer *r = a->ren;
     layout(a);
-    SDL_SetRenderDrawColor(r, 40, 40, 44, 255);
+    tiny_set_color(r, TINY_PAPER);
     SDL_RenderClear(r);
 
     int rx, ry;
@@ -849,11 +850,11 @@ static void render(App *a) {
         int ms = a->mini_scale;
         Image out;
         composite(a, &out);
-        SDL_SetRenderDrawColor(r, 20, 20, 22, 255);
+        tiny_set_color(r, TINY_INK);
         tiny_fill_rect(r, m.x, m.y, m.w, m.h);
-        SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+        tiny_set_color(r, TINY_PAPER);
         tiny_fill_rect(r, m.x + 1, m.y + 1, m.w - 2, m.h - 2);
-        SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+        tiny_set_color(r, TINY_INK);
         for (int y = 0; y < CANVAS; y++)
             for (int x = 0; x < CANVAS; x++)
                 if (out.px[y][x] == BLACK) tiny_fill_rect(r, m.x + 1 + x * ms, m.y + 1 + y * ms, ms, ms);
@@ -863,7 +864,7 @@ static void render(App *a) {
     int ox = a->view.x, oy = a->view.y;
 
     /* Margin (context area around the paintable canvas). */
-    SDL_SetRenderDrawColor(r, 120, 120, 126, 255);
+    tiny_set_color(r, TINY_GRAY);
     tiny_fill_rect(r, ox, oy, a->view.w, a->view.h);
 
     /* Canvas pixels + shape preview overlay. */
@@ -877,10 +878,9 @@ static void render(App *a) {
             if (fl && !ov) {
                 int color = a->flt[fj][fi];
                 if (inside) {
-                    if (color == BLACK) SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
-                    else SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+                    tiny_set_color(r, color == BLACK ? TINY_INK : TINY_PAPER);
                 } else if (color == BLACK) {
-                    SDL_SetRenderDrawColor(r, 70, 70, 76, 255);
+                    tiny_set_color(r, TINY_DIM);
                 } else {
                     continue;
                 }
@@ -890,12 +890,10 @@ static void render(App *a) {
             if (!inside && !ov) continue;
             if (ov && !inside) {
                 /* Parts of a shape falling off the canvas: tinted hint only. */
-                if (a->overlay_color == BLACK) SDL_SetRenderDrawColor(r, 70, 70, 76, 255);
-                else SDL_SetRenderDrawColor(r, 185, 185, 190, 255);
+                tiny_set_color(r, a->overlay_color == BLACK ? TINY_DIM : TINY_SHADE);
             } else {
                 int color = ov ? a->overlay_color : a->img.px[y][x];
-                if (color == BLACK) SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
-                else SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+                tiny_set_color(r, color == BLACK ? TINY_INK : TINY_PAPER);
             }
             tiny_fill_rect(r, ox + vx * c, oy + vy * c, c, c);
         }
@@ -917,8 +915,8 @@ static void render(App *a) {
     }
 
     /* Canvas border. */
-    int bw = c >= 8 ? 2 : 1;
-    SDL_SetRenderDrawColor(r, 30, 30, 34, 255);
+    int bw = a->unit;
+    tiny_set_color(r, TINY_INK);
     tiny_fill_rect(r, cx0 - bw, cy0 - bw, csz + 2 * bw, bw);
     tiny_fill_rect(r, cx0 - bw, cy0 + csz, csz + 2 * bw, bw);
     tiny_fill_rect(r, cx0 - bw, cy0, bw, csz);
@@ -935,8 +933,7 @@ static void render(App *a) {
         for (int pass = 0; pass < 2; pass++) {
             for (int d = 0; d < sw + sh; d += dash) {
                 bool on = (d / dash) % 2 == pass;
-                if (pass == 0) SDL_SetRenderDrawColor(r, 0, 110, 255, 255);
-                else SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+                tiny_set_color(r, pass == 0 ? TINY_INK : TINY_PAPER);
                 if (!on) continue;
                 if (d < sw) {
                     int len = d + dash > sw ? sw - d : dash;
@@ -955,15 +952,18 @@ static void render(App *a) {
     /* Hovered-pixel outline. */
     if (a->hover && !(a->dragging && is_shape_tool(a->tool))) {
         int hx = cx0 + a->hx * c, hy = cy0 + a->hy * c;
-        int t = c >= 10 ? 2 : 1;
-        SDL_SetRenderDrawColor(r, 255, 80, 60, 255);
-        tiny_fill_rect(r, hx, hy, c, t);
-        tiny_fill_rect(r, hx, hy + c - t, c, t);
-        tiny_fill_rect(r, hx, hy, t, c);
-        tiny_fill_rect(r, hx + c - t, hy, t, c);
+        int t = c >= 10 ? a->unit : 1;
+        for (int ring = 0; ring < 2 && c > 4 * t * ring; ring++) {
+            int o = ring * t, s = c - 2 * o;
+            tiny_set_color(r, ring == 0 ? TINY_INK : TINY_PAPER);
+            tiny_fill_rect(r, hx + o, hy + o, s, t);
+            tiny_fill_rect(r, hx + o, hy + o + s - t, s, t);
+            tiny_fill_rect(r, hx + o, hy + o, t, s);
+            tiny_fill_rect(r, hx + o + s - t, hy + o, t, s);
+        }
     }
 
-    SDL_RenderPresent(r);
+    tiny_present(r);
 }
 
 static void update_title(App *a) {

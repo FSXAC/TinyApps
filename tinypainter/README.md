@@ -7,7 +7,7 @@ A tiny SDL3 app for painting 32x32 black & white pixel art.
 Part of the `tinyapps` repo; from the repo root:
 
 ```sh
-brew install sdl3 sdl3_ttf
+brew install sdl3
 cmake -S . -B build && cmake --build build --target tinypainter
 ./build/bin/tinypainter   # or the `tpt` launcher
 ```

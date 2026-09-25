@@ -10,8 +10,8 @@ add_library(musiccore STATIC
 target_include_directories(musiccore PUBLIC src)
 target_compile_options(musiccore PUBLIC -Wall -Wextra)
 
-add_executable(musicnotes src/main.cpp src/keymap.cpp src/text.cpp)
-target_link_libraries(musicnotes PRIVATE musiccore SDL3::SDL3 SDL3_ttf::SDL3_ttf)
+add_executable(musicnotes src/main.cpp src/keymap.cpp)
+target_link_libraries(musicnotes PRIVATE musiccore tiny SDL3::SDL3)
 
 add_executable(musiccore_tests tests/core_tests.cpp)
 target_link_libraries(musiccore_tests PRIVATE musiccore)

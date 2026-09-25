@@ -36,14 +36,14 @@ static void render(App *a) {
     int w, h;
     SDL_GetRenderOutputSize(r, &w, &h);
 
-    if (flash) SDL_SetRenderDrawColor(r, 48, 48, 56, 255);
-    else SDL_SetRenderDrawColor(r, 24, 24, 28, 255);
+    int u = tiny_unit(a->win, r);
+    tiny_set_color(r, flash ? TINY_SHADE : TINY_PAPER);
     SDL_RenderClear(r);
 
-    /* Size the big number for 3 digits so it doesn't jump around. */
-    int big = SDL_min(w * 7 / 10 / tiny_text_width("000", 1), h * 2 / 5 / 7);
+    /* Display-size readout, sized for 3 digits so it doesn't jump around. */
+    int big = SDL_min(w * 7 / 10 / tiny_text_width("000", 1, TINY_BOLD), h * 2 / 5 / 7);
     if (big < 1) big = 1;
-    int small = SDL_max(1, SDL_min(w, h) / 110);
+    int body = TINY_BODY * u, caption = TINY_CAPTION * u;
 
     char num[16], sub[32], status[32];
     if (bpm > 0) {
@@ -54,24 +54,23 @@ static void render(App *a) {
         snprintf(num, sizeof num, "---");
         snprintf(sub, sizeof sub, "BPM");
     }
-    if (a->tempo.count == 0 || expired) snprintf(status, sizeof status, "TAP A KEY OR CLICK");
-    else snprintf(status, sizeof status, "%d TAP%s", a->tempo.count, a->tempo.count == 1 ? "" : "S");
+    if (a->tempo.count == 0 || expired) snprintf(status, sizeof status, "Tap a key or click");
+    else snprintf(status, sizeof status, "%d tap%s", a->tempo.count, a->tempo.count == 1 ? "" : "s");
 
-    int block_h = 7 * big + 4 * small + 7 * small;
-    int y = (h - block_h) / 2 - 4 * small;
+    int gap = TINY_PAD * u;
+    int block_h = tiny_text_height(big) + gap + tiny_text_height(body);
+    int y = (h - block_h) / 2 - TINY_GAP * u;
 
-    /* Dim the reading once it has expired: the next tap starts over. */
-    if (bpm > 0 && !expired) SDL_SetRenderDrawColor(r, 240, 240, 240, 255);
-    else SDL_SetRenderDrawColor(r, 110, 110, 118, 255);
-    tiny_text_centered(&a->font, num, w / 2, y, big);
+    /* Gray out the reading once it has expired: the next tap starts over. */
+    tiny_set_color(r, bpm > 0 && !expired ? TINY_INK : TINY_GRAY);
+    tiny_text_centered(&a->font, num, w / 2, y, big, TINY_BOLD);
 
-    SDL_SetRenderDrawColor(r, 150, 150, 158, 255);
-    tiny_text_centered(&a->font, sub, w / 2, y + 7 * big + 4 * small, small);
+    tiny_set_color(r, TINY_DIM);
+    tiny_text_centered(&a->font, sub, w / 2, y + tiny_text_height(big) + gap, body, TINY_PLAIN);
+    tiny_text_centered(&a->font, status, w / 2, h - tiny_text_height(caption) - TINY_PAD * u, caption,
+                       TINY_PLAIN);
 
-    SDL_SetRenderDrawColor(r, 90, 90, 98, 255);
-    tiny_text_centered(&a->font, status, w / 2, h - 7 * small - 5 * small, small);
-
-    SDL_RenderPresent(r);
+    tiny_present(r);
 }
 
 /* Milliseconds until the display next changes on its own, or -1 for none. */
