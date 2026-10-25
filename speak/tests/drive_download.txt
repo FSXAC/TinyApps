@@ -1,0 +1,21 @@
+# Download a model through the UI, then speak with it. Run with an empty
+# cache, e.g. HF_HUB_CACHE=$(mktemp -d) SPEAK_DRIVE=... ./build/bin/speak
+idle
+click model
+pick Kokoro-82M-8bit  ↓
+idle
+shot d1_offer.bmp
+click play
+sleep 3000
+shot d2_downloading.bmp
+until Downloaded
+idle
+shot d3_downloaded.bmp
+click text
+type Tokyo is far away, but Kyoto is closer.
+key enter cmd
+until Playing
+shot d4_autoplay.bmp
+idle
+expect Ready
+quit

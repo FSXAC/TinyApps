@@ -97,7 +97,7 @@ typedef enum { TINY_PLAIN, TINY_BOLD } TinyStyle;
 
 #define TINY_FONT_FIRST 0x20
 #define TINY_FONT_ASCII 95
-#define TINY_FONT_EXTRAS 10
+#define TINY_FONT_EXTRAS 13
 typedef struct {
     uint32_t codepoint;
     uint8_t rows[9];

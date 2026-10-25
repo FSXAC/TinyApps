@@ -1,0 +1,64 @@
+# End-to-end UI check, from a scratch dir (shots land in the current directory):
+#   SPEAK_SAVE_DIR=$PWD SPEAK_DRIVE=<repo>/speak/tests/drive_flow.txt <repo>/build/bin/speak
+idle
+click model
+pick Kokoro-82M-bf16
+idle
+shot 01_ready.bmp
+click text
+type Hello there. This is Paris calling, and the Eiffel Tower is lovely tonight.
+shot 02_typed.bmp
+click voice
+shot 03_voice_popup.bmp
+pick bf_emma
+click lang
+shot 04_lang_popup.bmp
+pick French
+shot 05_mismatch.bmp
+key enter cmd
+idle
+shot 06_french_result.bmp
+expect French needs espeak-ng
+click lang
+pick English (US)
+key enter cmd
+sleep 400
+shot 07_generating.bmp
+until Playing
+shot 08_autoplay.bmp
+idle
+expect Ready
+expect skipped Eiffel
+click play
+sleep 600
+shot 09_playing.bmp
+idle
+click save
+expect /paris_001.wav
+shot 10_saved.bmp
+sleep 1200
+click save
+expect Already saved as
+key enter shift
+type Again.
+shot 11_edited.bmp
+click play
+until Playing
+idle
+expect Ready
+click model
+shot 12_model_popup.bmp
+pick Kokoro-82M-6bit  ↓
+idle
+shot 13_download_offer.bmp
+click play
+sleep 2500
+shot 14_downloading.bmp
+click play
+sleep 300
+expect Download cancelled
+shot 15_cancelled.bmp
+click model
+pick Kokoro-82M-bf16
+idle
+quit

@@ -22,7 +22,7 @@ There is **no accent colour.** State is shown by inverting ink and paper, just a
 
 ## Type
 
-- One font: the 5x7 bitmap in `font5x7.c`, covering ASCII plus `⌘ ← → ‹ › · • – — …`, with 2-pixel descenders. Text is UTF-8. To add a symbol, append it to `tiny_font_extras`.
+- One font: the 5x7 bitmap in `font5x7.c`, covering ASCII plus `⌘ ← → ‹ › · • – — … ▾ ↩ ↓`, with 2-pixel descenders. Text is UTF-8. To add a symbol, append it to `tiny_font_extras`.
 - Sizes are roles times the unit: **caption** `TINY_CAPTION` (1u, hints and help lines), **body** `TINY_BODY` (2u, labels and values), **title** `TINY_TITLE` (3u, primary content such as the note log). A single dominant readout (Tempo's BPM) may be a larger, fitted "display" size.
 - **Bold** (`TINY_BOLD`, QuickDraw-style double strike) is for button labels, headings and emphasis (e.g. the C of each octave). Everything else is plain.
 - Write text in sentence case ("Tap a key or click"). Button labels are single words where possible. Button labels can be ALL CAPS only when they sit under icons at caption size (TinyPainter's toolbar).

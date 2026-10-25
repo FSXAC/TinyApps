@@ -11,6 +11,10 @@ A monorepo of small, practical desktop tools built on SDL3. They favor function 
 | `tinypainter/` | `tinypainter` / `tpt` | C99 | 32x32 black & white pixel painter (see its README for controls) |
 | `tempo/` | `tempo` / `tempo` | C99 | tap BPM counter |
 | `musicnotes/` | `musicnotes` / `nts` | C++17 | on-screen piano that logs note/chord names |
+| `chess/` | `chess` / `chess` | C99 | offline chess vs a bot (default: the Student, which learns your level), with post-game review and eval bar (`--demo`: bots play each other; `--timer <min>`: a clock for you) |
+| `puzzle/` | `puzzle` / `puzzle` | C99 | the Whole Year Puzzle: place pieces to leave today's date showing, with a solved-days tracker and a solver |
+| `statespace/` | `statespace` / `statespace` | C99 | state-space visualizer: a game's states as a layered graph, valued under perfect play; games (tic-tac-toe, the year puzzle) plug in through an API |
+| `speak/` | `speak` / `speak` | C99 + Python | text-to-speech front-end for MLX audio: model, voice and language pickers, background generation with progress and auto-play, model downloads, save, and reading .txt/.md files; the speech work runs in a Python worker process |
 | `common/` | `tiny` static lib | C | shared window setup, design language (`DESIGN.md`), 5x7 bitmap font, test macros |
 
 ## Commands
@@ -19,9 +23,9 @@ A monorepo of small, practical desktop tools built on SDL3. They favor function 
 cmake -S . -B build                          # configure (needs Homebrew sdl3)
 cmake --build build -j                       # build everything; binaries land in build/bin/
 cmake --build build --target tempo           # build one app
-cmake --build build --target links           # (re)create ~/.local/bin/{tpt,tempo,nts} -> build/bin/*
+cmake --build build --target links           # (re)create ~/.local/bin/{tpt,tempo,nts,chess,puzzle,statespace,speak} -> build/bin/*
 ctest --test-dir build --output-on-failure   # all tests
-./build/bin/tempo_tests                      # one test binary directly (also musiccore_tests)
+./build/bin/tempo_tests                      # one test binary directly (also musiccore_tests, chess_tests, bot_tests, analysis_tests, puzzle_tests, sv_tests, speak_tests)
 ```
 
 The launchers are symlinks into `build/bin`, so rebuilding updates them. There's no install step.
@@ -29,7 +33,7 @@ The launchers are symlinks into `build/bin`, so rebuilding updates them. There's
 ## Conventions
 
 - **SDL3 only.** The Homebrew `sdl2` is actually `sdl2-compat`; don't add SDL2 code. In SDL3, most functions return `bool` (true = success), event timestamps are `uint64` nanoseconds, and render rects are `SDL_FRect`.
-- **Each app keeps its logic SDL-free** so it can be unit tested: `tempo/src/tempo.c` → `tempocore`, and `musicnotes`' `musiccore`. Tests use tiny homemade harnesses with no framework: `common/check.h` for C (end `main` with `return check_report();`) and `musicnotes`' own `CHECK` for C++.
+- **Each app keeps its logic SDL-free** so it can be unit tested: `tempo/src/tempo.c` → `tempocore`, `musicnotes`' `musiccore`, `chess`' `chesscore`, `puzzle`'s `puzzlecore`, `statespace`'s `svcore`, and `speak`'s `speakcore`. Tests use tiny homemade harnesses with no framework: `common/check.h` for C (end `main` with `return check_report();`) and `musicnotes`' own `CHECK` for C++.
 - **Rendering is event-driven** in every app: block in `SDL_WaitEvent`/`SDL_WaitEventTimeout` and redraw only after events. Anything animated or time-based needs a wake-up timeout, or it won't redraw.
 - **Pixel coordinates:** the C apps lay out in renderer output pixels (`SDL_GetRenderOutputSize`, windows created with `SDL_WINDOW_HIGH_PIXEL_DENSITY`) and size UI in design units (`tiny_unit()`). `musicnotes` instead uses a fixed logical presentation.
 - **All UI follows `common/DESIGN.md`**, a classic-Mac design language: ink/paper palette tokens, whole-unit sizes, bitmap type roles, stepped rounded corners, and inversion for pressed or selected states. Use the `tiny_*` helpers and `TinyColor` tokens, never raw RGB or TTF fonts. Read it before any UI work.

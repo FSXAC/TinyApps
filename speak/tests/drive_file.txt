@@ -1,0 +1,39 @@
+# File mode: open a Markdown file, generate it in parts, auto-play, and save
+# next to it. From a scratch dir holding a copy of the fixture:
+#   cp <repo>/speak/tests/chapter.md . && SPEAK_SAVE_DIR=$PWD/typed \
+#     SPEAK_DRIVE=<repo>/speak/tests/drive_file.txt <repo>/build/bin/speak
+idle
+click model
+pick Kokoro-82M-bf16
+idle
+click voice
+pick af_heart
+click lang
+pick English (US)
+drop chapter.md
+expect Opened chapter.md
+expect chapter_NNN.wav
+shot f1_opened.bmp
+key enter cmd
+until Part 2 of
+shot f2_parts.bmp
+until Playing
+shot f3_autoplay.bmp
+key escape
+expect Stopped
+click save
+expect /chapter_001.wav
+sleep 1200
+key enter cmd
+sleep 300
+key escape
+key a cmd
+key backspace
+type Paris in spring.
+key enter cmd
+until Playing
+idle
+click save
+expect typed/paris_001.wav
+shot f4_typed.bmp
+quit
