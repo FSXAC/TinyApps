@@ -21,6 +21,8 @@ bool sv_puzzle_set_date(int month, int day);
 int sv_puzzle_placed(const void *s, int p);
 /* Board cells as bits r * 7 + c. */
 uint64_t sv_puzzle_mask(SvMove m);
+/* How many placements (moves) there are; each is an index below this. */
+int sv_puzzle_placements(void);
 uint64_t sv_puzzle_date_mask(void);
 uint64_t sv_puzzle_board_mask(void);
 

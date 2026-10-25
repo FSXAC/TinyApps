@@ -61,6 +61,10 @@ bool sv_puzzle_set_date(int m, int d) {
 }
 
 uint64_t sv_puzzle_mask(SvMove m) { return pl_mask[m]; }
+int sv_puzzle_placements(void) {
+    build_placements();
+    return npl;
+}
 uint64_t sv_puzzle_date_mask(void) { return date_mask; }
 uint64_t sv_puzzle_board_mask(void) { return board_mask; }
 
@@ -95,9 +99,15 @@ static int to_move(const void *s) {
 }
 
 static int outcome(const void *s) {
-    for (int p = 0; p < PZ_PIECES; p++)
-        if (sv_puzzle_placed(s, p) < 0) return SV_PLAYING;
-    return 0; /* nine disjoint pieces fill the 41 cells left */
+    uint64_t cover = 0;
+    for (int p = 0; p < PZ_PIECES; p++) {
+        int m = sv_puzzle_placed(s, p);
+        if (m < 0) return SV_PLAYING;
+        cover |= pl_mask[m];
+    }
+    /* Nine disjoint pieces fill the 41 cells left, unless one was forced onto the date
+       (a replay of a real board can do that). */
+    return cover & date_mask ? SV_NOBODY : 0;
 }
 
 /* Placements of unplaced pieces that fit; with `lowest`, only those covering

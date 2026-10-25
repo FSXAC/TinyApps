@@ -14,6 +14,7 @@
 #include <time.h>
 
 #include "games.h"
+#include "puzzle.h"
 #include "sv.h"
 #include "tiny.h"
 #include "views.h"
@@ -90,6 +91,7 @@ typedef struct {
     double panx; /* slot at the canvas's center, from -maxw/2 to maxw/2 */
     int scrolly;
     bool need_fit; /* fit the view on the next frame */
+    int row_h;     /* replay only: a fixed layer height, 0 to fit them all */
     bool at_fit;   /* untouched since the last fit, so a resize refits */
 
     int mx, my;
@@ -188,7 +190,7 @@ static Layout layout(const App *a) {
     }
 
     int nl = SDL_max(a->g.nlayers, 1);
-    L.row_h = SDL_max(L.canvas.h / nl, 28 * u);
+    L.row_h = a->row_h ? a->row_h : SDL_max(L.canvas.h / nl, 28 * u);
     L.thumb_max = SDL_clamp(round_u(L.row_h - 14 * u, u), 9 * u, 48 * u);
     return L;
 }
@@ -405,12 +407,10 @@ static void draw_node(App *a, const Layout *L, int n) {
     }
 }
 
-/* A ring around a node: single for the path, double for its end. */
-static void ring(App *a, const Layout *L, int n, bool end) {
+/* A ring around a box: single for the path, double for its end. */
+static void ring_box(App *a, const Layout *L, Rect b, bool end) {
     SDL_Renderer *r = a->ren;
     int u = L->u;
-    Spot s = spot(a, L, n);
-    Rect b = s.box;
     int o = 2 * u;
     tiny_set_color(r, TINY_INK);
     for (int k = 0; k < (end ? 2 : 1); k++, o += 2 * u) {
@@ -419,6 +419,34 @@ static void ring(App *a, const Layout *L, int n, bool end) {
         tiny_fill_rect(r, x, y + h - u, w, u);
         tiny_fill_rect(r, x, y, u, h);
         tiny_fill_rect(r, x + w - u, y, u, h);
+    }
+}
+
+static void ring(App *a, const Layout *L, int n, bool end) { ring_box(a, L, spot(a, L, n).box, end); }
+
+/* Where the path's i-th state is drawn when it's off a closed graph (a dead end): a
+   thumbnail in its layer, straight below the last state on the graph. */
+static Rect dead_box(const App *a, const Layout *L, int i, int last) {
+    int t = L->thumb_max, u = L->u;
+    return (Rect){spot(a, L, last).cx - t / 2, layer_y(a, L, i) - (t + 4 * u) / 2, t, t + 4 * u};
+}
+
+/* The path past the graph's edge, in gray: each dead-end state's board and its value
+   strip, joined by the path's line. */
+static void draw_dead_end(App *a, const Layout *L) {
+    SDL_Renderer *r = a->ren;
+    int u = L->u, last = -1, k = 0;
+    while (k <= a->path.n && a->path.node[k] >= 0) last = a->path.node[k++];
+    if (k > a->path.n || last < 0) return;
+    Rect prev = spot(a, L, last).box;
+    for (int i = k; i <= a->path.n; i++) {
+        Rect b = dead_box(a, L, i, last);
+        tiny_set_color(r, TINY_GRAY);
+        thick_line(r, prev.x + prev.w / 2 - u, prev.y + prev.h, b.x + b.w / 2 - u, b.y, 2 * u);
+        a->ent->view->draw(r, &a->font, a->path.state[i], b.x, b.y, b.w, u);
+        sv_value_fill(r, b.x, b.y + b.w + u, b.w, 3 * u, SV_NOBODY, u);
+        ring_box(a, L, b, i == a->path.n);
+        prev = b;
     }
 }
 
@@ -488,6 +516,7 @@ static void draw_graph(App *a, const Layout *L, int hover) {
     }
     for (int i = 0; i <= a->path.n; i++)
         if (a->path.node[i] >= 0) ring(a, L, a->path.node[i], i == a->path.n);
+    draw_dead_end(a, L);
     SDL_SetRenderClipRect(r, NULL);
 }
 
@@ -639,7 +668,7 @@ static void draw_panel(App *a, const Layout *L) {
     }
 }
 
-static void render(App *a) {
+static void draw_frame(App *a) {
     SDL_Renderer *r = a->ren;
     Layout L = layout(a);
     if (a->need_fit) fit(a, &L);
@@ -691,7 +720,11 @@ static void render(App *a) {
     const char *hint = "Click a state to go there · Backspace back · Scroll to pan · Pinch or ⌘-scroll to zoom";
     tiny_text(&a->font, hint, SDL_max(x, w - TINY_MARGIN * u - tiny_text_width(hint, u, TINY_PLAIN)), fy, u,
               TINY_PLAIN);
-    tiny_present(r);
+}
+
+static void render(App *a) {
+    draw_frame(a);
+    tiny_present(a->ren);
 }
 
 /* ------------------------------------------------------------------ */
@@ -868,11 +901,210 @@ static bool handle_event(App *a, SDL_Event *e) {
     return true;
 }
 
+/* ------------------------------------------------------------------ */
+/* Replay, for video overlays (puzzle only): one frame per state line of a
+   file. A state line lists the pieces on the board in the order they were
+   placed, each as its cells' labels joined by commas ("15,22,23,24,29
+   jan,feb,jul,1,8"); a blank line is the empty board. "view <zoom> <panx>
+   [<row_h> <scrolly>]" sets the camera for the lines after it (zoom in pixels
+   per slot of the widest layer, panx the slot at the graph's centre, as in
+   App; a layer height, which sizes the thumbnails, and the scroll), otherwise
+   each frame fits and reveals the path's end. Writes NNNN.bmp per frame and
+   layout.txt (the rects an overlay crops, the zoom range, and per frame where
+   the path's end sits) to outdir; with outdir "-", streams frames to stdout
+   as raw RGB24 instead and writes nothing else. A piece the rules don't allow
+   (covering the date, say) still goes on, last and off the graph: a dead end, as
+   on the real board. Renders in a hidden window. */
+
+static uint64_t label_mask(char *cells) {
+    uint64_t m = 0;
+    char *save = NULL;
+    for (char *t = SDL_strtok_r(cells, ",", &save); t; t = SDL_strtok_r(NULL, ",", &save)) {
+        uint64_t bit = 0;
+        for (int r = 0; r < PZ_BOARD && !bit; r++)
+            for (int c = 0; c < PZ_BOARD && !bit; c++)
+                if (pz_label(r, c) && !SDL_strcasecmp(pz_label(r, c), t)) bit = 1ull << (r * PZ_BOARD + c);
+        if (!bit) return 0;
+        m |= bit;
+    }
+    return m;
+}
+
+/* Appends a placement the rules don't allow from the path's end (one covering the date,
+   say): what's on the real board is still shown, as a dead end off the graph. */
+static bool force_push(App *a, uint64_t m) {
+    SvPath *p = &a->path;
+    for (int k = 0, n = sv_puzzle_placements(); k < n && p->n < SV_MAX_DEPTH; k++)
+        if (sv_puzzle_mask((SvMove)k) == m) {
+            memset(p->state[p->n + 1], 0, SV_MAX_STATE);
+            a->g.game->apply(p->state[p->n], (SvMove)k, p->state[p->n + 1]);
+            p->move[p->n] = (SvMove)k;
+            p->node[++p->n] = -1;
+            return true;
+        }
+    return false;
+}
+
+static void write_rect(FILE *f, const char *name, Rect r) { fprintf(f, "%s %d %d %d %d\n", name, r.x, r.y, r.w, r.h); }
+
+/* The path's deepest node on the graph: its end, or before a dead end the last
+   state that was still solvable. */
+static int path_last_node(const App *a) {
+    for (int i = a->path.n; i >= 0; i--)
+        if (a->path.node[i] >= 0) return a->path.node[i];
+    return 0;
+}
+
+static int replay(App *a, const char *file, const char *dir, int w, int h) {
+    FILE *in = fopen(file, "r");
+    if (!in) {
+        fprintf(stderr, "statespace: can't read %s\n", file);
+        return 1;
+    }
+    bool raw = !strcmp(dir, "-");
+    a->win = SDL_CreateWindow("State Space", w, h, SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    a->ren = a->win ? SDL_CreateRenderer(a->win, NULL) : NULL;
+    if (!a->ren || !tiny_font_init(&a->font, a->ren)) {
+        fprintf(stderr, "statespace: %s\n", SDL_GetError());
+        return 1;
+    }
+    float dens = tiny_pixel_density(a->win, a->ren);
+    if (dens > 1) SDL_SetWindowSize(a->win, (int)(w / dens), (int)(h / dens)); /* w x h output pixels */
+    /* Draw into a texture the window's size, not the window: the same pixels without waiting on the
+       window's drawable, ~25% faster. */
+    int tw, th;
+    SDL_GetRenderOutputSize(a->ren, &tw, &th);
+    SDL_Texture *target = SDL_CreateTexture(a->ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, tw, th);
+    if (!target || !SDL_SetRenderTarget(a->ren, target)) {
+        fprintf(stderr, "statespace: %s\n", SDL_GetError());
+        return 1;
+    }
+    a->mx = a->my = -10000; /* no hover */
+    draw_frame(a);          /* fits the view */
+    Layout L = layout(a);
+
+    static SvMove moves[SV_MAX_MOVES];
+    static char line[8192], prev[8192];
+    char out[1024];
+    /* per frame: depth, slot and layer size of the path's last node on the graph, whether that's the
+       end, and the path's length */
+    enum { MAX_INFO = 100000 };
+    static int info_depth[MAX_INFO], info_len[MAX_INFO], info_end[MAX_INFO], info_n[MAX_INFO];
+    static double info_slot[MAX_INFO];
+    bool view = false;
+    double vzoom = 0, vpan = 0;
+    int vrow = 0, vscroll = 0;
+    int frame = 0, lineno = 0;
+    prev[0] = 1; /* matches no line */
+    while (fgets(line, sizeof line, in)) {
+        lineno++;
+        if (!strncmp(line, "view ", 5)) {
+            vrow = vscroll = 0;
+            view = sscanf(line + 5, "%lf %lf %d %d", &vzoom, &vpan, &vrow, &vscroll) >= 2;
+            continue;
+        }
+        if (strcmp(line, prev)) { /* a new state: rebuild the path */
+            SDL_strlcpy(prev, line, sizeof prev);
+            sv_path_reset(&a->g, &a->path);
+            char *save = NULL;
+            uint64_t later[PZ_PIECES];
+            int nlater = 0;
+            for (char *t = SDL_strtok_r(line, " \t\r\n", &save); t; t = SDL_strtok_r(NULL, " \t\r\n", &save)) {
+                char cells[256];
+                SDL_strlcpy(cells, t, sizeof cells);
+                uint64_t m = label_mask(cells);
+                const void *s = sv_path_end(&a->path);
+                int n = m ? a->g.game->moves(s, moves) : 0, i = 0;
+                while (i < n && sv_puzzle_mask(moves[i]) != m) i++;
+                if (i < n && sv_path_push(&a->g, &a->path, moves[i])) continue;
+                if (m && nlater < PZ_PIECES) later[nlater++] = m; /* illegal here: after the legal ones */
+                else fprintf(stderr, "statespace: line %d: no placement covers %s, skipped\n", lineno, t);
+            }
+            for (int i = 0; i < nlater; i++)
+                if (!force_push(a, later[i])) fprintf(stderr, "statespace: line %d: can't place a piece, skipped\n", lineno);
+            a->redo = a->path.n;
+            path_changed(a);
+        }
+        if (view) {
+            a->row_h = vrow;
+            L = layout(a);
+            a->zoom = vzoom, a->panx = vpan, a->scrolly = vscroll, a->at_fit = false;
+            clamp_view(a, &L);
+        } else {
+            reveal_end(a);
+        }
+        draw_frame(a);
+        if (frame < MAX_INFO) {
+            int n = path_last_node(a);
+            info_depth[frame] = a->g.nodes[n].depth;
+            info_len[frame] = sv_layer_len(&a->g, a->g.nodes[n].depth);
+            info_slot[frame] = (sv_layer_x(&a->g, n) - 0.5) * a->maxw;
+            info_end[frame] = a->path.node[a->path.n] >= 0;
+            info_n[frame] = a->path.n;
+        }
+        SDL_Surface *surf = SDL_RenderReadPixels(a->ren, NULL);
+        if (raw) {
+            SDL_Surface *rgb = surf ? SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGB24) : NULL;
+            if (!rgb) {
+                fprintf(stderr, "statespace: %s\n", SDL_GetError());
+                return 1;
+            }
+            for (int y = 0; y < rgb->h; y++) fwrite((Uint8 *)rgb->pixels + (size_t)y * rgb->pitch, 3, (size_t)rgb->w, stdout);
+            SDL_DestroySurface(rgb);
+        } else {
+            snprintf(out, sizeof out, "%s/%04d.bmp", dir, frame);
+            if (!surf || !SDL_SaveBMP(surf, out)) fprintf(stderr, "statespace: %s: %s\n", out, SDL_GetError());
+        }
+        SDL_DestroySurface(surf);
+        frame++;
+    }
+    fclose(in);
+    fflush(stdout);
+
+    int ow, oh;
+    SDL_GetRenderOutputSize(a->ren, &ow, &oh);
+    if (!raw) {
+        snprintf(out, sizeof out, "%s/layout.txt", dir);
+        FILE *f = fopen(out, "w");
+        if (f) {
+            fprintf(f, "frames %d\nu %d\nsize %d %d\n", frame, L.u, ow, oh);
+            write_rect(f, "header", (Rect){TINY_MARGIN * L.u, L.head_y, ow - 2 * TINY_MARGIN * L.u, L.head_h});
+            write_rect(f, "canvas", L.canvas);
+            write_rect(f, "graph", L.graph);
+            write_rect(f, "panel", L.panel);
+            write_rect(f, "board", L.board);
+            fprintf(f, "text_y %d\nlist_y %d\nfoot_y %d\n", L.text_y, L.list_y, L.foot_y);
+            fprintf(f, "maxw %d\nfit_zoom %.6f\nmax_zoom %.6f\nthumb_pitch %d\n", a->maxw, fit_zoom(a, &L),
+                    max_zoom(a, &L), L.thumb_max + 8 * L.u);
+            for (int i = 0; i < frame && i < MAX_INFO; i++)
+                fprintf(f, "state %d %d %.4f %d %d %d\n", i, info_depth[i], info_slot[i], info_len[i], info_end[i],
+                        info_n[i]);
+            fclose(f);
+        }
+    }
+    fprintf(stderr, "%d frames at %dx%d (unit %d)\n", frame, ow, oh, L.u);
+    SDL_DestroyTexture(target);
+    tiny_font_free(&a->font);
+    SDL_DestroyRenderer(a->ren);
+    SDL_DestroyWindow(a->win);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     static App app;
     App *a = &app;
     a->ent = &GAMES[0];
     a->fold = true;
+    const char *replay_file = NULL, *replay_dir = NULL;
+    int replay_w = 1600, replay_h = 900;
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--replay")) {
+            if (i + 2 >= argc || (i + 3 < argc && sscanf(argv[i + 3], "%dx%d", &replay_w, &replay_h) != 2) ||
+                i + 4 < argc)
+                goto usage;
+            replay_file = argv[i + 1], replay_dir = argv[i + 2];
+            argc = i;
+        }
     if (argc > 3) goto usage;
     if (argc >= 2) {
         a->ent = NULL;
@@ -882,9 +1114,22 @@ int main(int argc, char **argv) {
     }
     if (a->ent->configure ? !a->ent->configure(argc > 2 ? argv[2] : NULL) : argc > 2) goto usage;
 
+    if (replay_file && strncmp(a->ent->id, "puzzle", 6)) goto usage;
+
     build(a);
     sv_path_reset(&a->g, &a->path);
     path_changed(a);
+
+    if (replay_file) {
+        if (!SDL_Init(SDL_INIT_VIDEO)) {
+            fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+            return 1;
+        }
+        int rc = replay(a, replay_file, replay_dir, replay_w, replay_h);
+        sv_free(&a->g);
+        SDL_Quit();
+        return rc;
+    }
 
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -924,7 +1169,7 @@ int main(int argc, char **argv) {
     return 0;
 
 usage:
-    fprintf(stderr, "usage: statespace [game]\ngames:\n");
+    fprintf(stderr, "usage: statespace [game] [--replay states.txt outdir [WxH]]\ngames:\n");
     for (size_t i = 0; i < SDL_arraysize(GAMES); i++) fprintf(stderr, "  %s%s\n", GAMES[i].id, GAMES[i].args);
     return 2;
 }
